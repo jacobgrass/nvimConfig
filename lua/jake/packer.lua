@@ -22,6 +22,12 @@ use {
 
 use('nvim-treesitter/nvim-treesitter', {run = ':TSUpdate'})
 
-use { "scottmckendry/cyberdream.nvim" }
+use({
+  "neanias/everforest-nvim",
+  -- Optional; default configuration will be used if setup isn't called.
+  config = function()
+    require("everforest").setup()
+  end,
+})
 
 end)
