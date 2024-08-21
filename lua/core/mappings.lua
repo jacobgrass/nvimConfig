@@ -16,6 +16,8 @@ M.general = {
   },
 
   n = {
+    ["<leader>qn"] = {":q!<Enter>","Quit now!"},
+    ["<leader>wq"] = {":wq<Enter>","Write - Quit"},
     ["<Esc>"] = { "<cmd> noh <CR>", "Clear highlights" },
     -- switch between windows
     ["<C-h>"] = { "<C-w>h", "Window left" },
