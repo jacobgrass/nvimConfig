@@ -16,8 +16,14 @@ M.general = {
   },
 
   n = {
-    ["<leader>qn"] = {":q!<Enter>","Quit now!"},
-    ["<leader>wq"] = {":wq<Enter>","Write - Quit"},
+    ["<leader>qn"] = { ":q!<Enter>", "Quit now!" },
+    ["<leader>wq"] = { ":wq<Enter>", "Write - Quit" },
+    ["<leader>tc"] = { function()
+      vim.b.cmp_enabled = not vim.b.cmp_enabled
+      require('cmp').setup.buffer { enabled = vim.b.cmp_enabled }
+    end, "Toggle autocorrect (toggle correction)" },
+
+
     ["<Esc>"] = { "<cmd> noh <CR>", "Clear highlights" },
     -- switch between windows
     ["<C-h>"] = { "<C-w>h", "Window left" },
@@ -291,6 +297,9 @@ M.telescope = {
     ["<leader>th"] = { "<cmd> Telescope themes <CR>", "Nvchad themes" },
 
     ["<leader>ma"] = { "<cmd> Telescope marks <CR>", "telescope bookmarks" },
+
+    -- diagnostics
+    ["<leader>cd"] = {"<cmd> Telescope diagnostics <CR>","telescope diagnostics"},
   },
 }
 
