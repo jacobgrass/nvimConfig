@@ -18,6 +18,9 @@ M.general = {
   n = {
     ["<leader>qn"] = { ":q!<Enter>", "Quit now!" },
     ["<leader>wq"] = { ":wq<Enter>", "Write - Quit" },
+    ["<leader>cf"] = { "zC", "Close Folds"},
+    ["<leader>of"] = { "zO", "Open Folds"},
+
     ["<leader>tc"] = { function()
       vim.b.cmp_enabled = not vim.b.cmp_enabled
       require('cmp').setup.buffer { enabled = vim.b.cmp_enabled }
