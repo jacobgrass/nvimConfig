@@ -82,6 +82,19 @@ M.general = {
   },
 }
 
+M.dap = {
+  plugin = true,
+  n = {
+    ["<leader>db"] = {
+      "<cmd> DapToggleBreakpoint <CR>",
+      "Add breakpoint at line",
+    },
+    ["<leader>dr"] = {
+      "<cmd> DapContinue <CR>",
+      "Start or continue the debugger",
+    }
+  }
+}
 M.tabufline = {
   plugin = true,
 
@@ -299,7 +312,7 @@ M.telescope = {
     ["<leader>ma"] = { "<cmd> Telescope marks <CR>", "telescope bookmarks" },
 
     -- diagnostics
-    ["<leader>cd"] = {"<cmd> Telescope diagnostics <CR>","telescope diagnostics"},
+    ["<leader>cd"] = { "<cmd> Telescope diagnostics <CR>", "telescope diagnostics" },
   },
 }
 
