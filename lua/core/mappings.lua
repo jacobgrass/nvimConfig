@@ -18,8 +18,8 @@ M.general = {
   n = {
     ["<leader>qn"] = { ":q!<Enter>", "Quit now!" },
     ["<leader>wq"] = { ":wq<Enter>", "Write - Quit" },
-    ["<leader>cf"] = { "zC", "Close Folds"},
-    ["<leader>of"] = { "zO", "Open Folds"},
+    ["<leader>cf"] = { "zC", "Close Folds" },
+    ["<leader>of"] = { "zO", "Open Folds" },
 
     ["<leader>tc"] = { function()
       vim.b.cmp_enabled = not vim.b.cmp_enabled
@@ -89,15 +89,62 @@ M.dap = {
   plugin = true,
   n = {
     ["<leader>db"] = {
-      "<cmd> DapToggleBreakpoint <CR>",
+      function()
+        require("dap").toggle_breakpoint()
+      end,
       "Add breakpoint at line",
     },
-    ["<leader>dr"] = {
-      "<cmd> DapContinue <CR>",
+    ["<leader>dc"] = {
+      function()
+        require("dap").continue()
+      end,
       "Start or continue the debugger",
-    }
-  }
+    },
+    ["<leader>di"] = {
+      function()
+        require("dap").step_into()
+      end,
+      "Step into",
+    },
+    ["<leader>do"] = {
+      function()
+        require("dap").step_over()
+      end,
+      "Step over",
+    },
+    ["<leader>dO"] = {
+      function()
+        require("dap").step_out()
+      end,
+      "Step out",
+    },
+    ["<leader>dr"] = {
+      function()
+        require("dap").repl.open()
+      end,
+      "Open REPL",
+    },
+    ["<leader>dl"] = {
+      function()
+        require("dap").run_last()
+      end,
+      "Run last",
+    },
+    ["<leader>dt"] = {
+      function()
+        require("dap").terminate()
+      end,
+      "Terminate",
+    },
+    ["<leader>du"] = {
+      function()
+        require("dapui").toggle()
+      end,
+      "Toggle DAP UI",
+    },
+  },
 }
+
 M.tabufline = {
   plugin = true,
 
@@ -126,7 +173,6 @@ M.tabufline = {
     },
   },
 }
-
 M.comment = {
   plugin = true,
 
