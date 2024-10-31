@@ -4,6 +4,7 @@ local capabilities = base.capabilities
 
 local lspconfig = require("lspconfig")
 
+-- Existing clangd setup
 lspconfig.clangd.setup {
   on_attach = function(client, bufnr)
     client.server_capabilities.signatureHelpProvider = false
@@ -11,3 +12,14 @@ lspconfig.clangd.setup {
   end,
   capabilities = capabilities,
 }
+
+-- Add CMAKE setup
+lspconfig.cmake.setup {
+  on_attach = on_attach,
+  capabilities = capabilities,
+  filetypes = { "cmake", "CMakeLists.txt" },
+  init_options = {
+    buildDirectory = "build",
+  },
+}
+

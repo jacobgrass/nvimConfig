@@ -66,7 +66,35 @@ local plugins = {
     lazy = false
     -- Uncomment next line if you want to follow only stable versions
     -- tag = "*"
-  }
+  },
+   {
+    "frostplexx/mason-bridge.nvim",
+    dependencies = {
+      "williamboman/mason.nvim",
+      "neovim/nvim-lspconfig",
+    },
+    config = function()
+      require("mason-bridge").setup({
+        -- Optional configuration options
+        handlers = {
+          -- Default handlers
+          default = function(config)
+            require("lspconfig")[config.name].setup(config)
+          end,
+        },
+        -- Automatically install LSP servers
+        automatic_installation = true,
+        -- Optional: List of LSP servers to configure
+        servers = {
+          -- Example server configurations
+          clangd = {},
+          cmake = {},
+          lua_ls = {},
+          -- Add other servers as needed
+        },
+      })
+    end,
+  },
 }
 
 
