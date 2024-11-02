@@ -3,13 +3,33 @@ local plugins = {
     "williamboman/mason.nvim",
     opts = {
       ensure_installed = {
+        -- LSP
+        "bash-language-server",
         "clangd",
-        "cmake - language - server",
-        "cmakelang",
-        "cmakelint",
+        "cmake-language-server",
+        "json-lsp",
+        "lua-language-server",
+        "python-lsp-server",
+        "yaml-language-server",
+
+        -- DAP
         "codelldb",
-        "cpptools",
-        "lua - language - server",
+
+        -- Linters
+        "cpplint",
+        "pylint",
+        "cmakelint",
+        "protolint",
+
+        -- Formatters
+        "clang-format",
+        "cmakelang", -- Provides cmake-format
+        "yamlfmt",
+        "buf",
+
+        -- Optional but recommended for CI configuration
+        "circleci-yaml-language-server",
+        "gitlab-ci-ls",
       },
     },
   },
@@ -31,7 +51,6 @@ local plugins = {
       handlers = {},
     },
   },
-
   {
     "neovim/nvim-lspconfig",
     config = function()
@@ -67,7 +86,7 @@ local plugins = {
     -- Uncomment next line if you want to follow only stable versions
     -- tag = "*"
   },
-   {
+  {
     "frostplexx/mason-bridge.nvim",
     dependencies = {
       "williamboman/mason.nvim",

@@ -7,10 +7,15 @@ local lspconfig = require("lspconfig")
 -- Existing clangd setup
 lspconfig.clangd.setup {
   on_attach = function(client, bufnr)
-    client.server_capabilities.signatureHelpProvider = false
+    -- client.server_capabilities.signatureHelpProvider = false
     on_attach(client, bufnr)
+    -- Disable diagnostics for proto files
+    if vim.bo[bufnr].filetype == "proto" then
+      vim.diagnostic.disable(bufnr)
+    end
   end,
   capabilities = capabilities,
+  filetypes = { "c", "cpp", "objc", "objcpp", "cuda", "proto" },
 }
 
 -- Add CMAKE setup
@@ -23,3 +28,40 @@ lspconfig.cmake.setup {
   },
 }
 
+-- Python
+lspconfig.pylsp.setup {
+  on_attach = on_attach,
+  capabilities = capabilities,
+}
+
+-- Lua
+lspconfig.lua_ls.setup {
+  on_attach = on_attach,
+  capabilities = capabilities,
+}
+
+-- JSON
+lspconfig.jsonls.setup {
+  on_attach = on_attach,
+  capabilities = capabilities,
+}
+
+-- YAML
+lspconfig.yamlls.setup {
+  on_attach = on_attach,
+  capabilities = capabilities,
+  settings = {
+    yaml = {
+      schemas = {
+        ["https://json.schemastore.org/github-workflow.json"] = "/.github/workflows/*",
+        ["https://json.schemastore.org/gitlab-ci.json"] = "/.gitlab-ci.yml",
+      },
+    },
+  },
+}
+
+-- Bash
+lspconfig.bashls.setup {
+  on_attach = on_attach,
+  capabilities = capabilities,
+}
