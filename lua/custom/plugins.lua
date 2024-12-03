@@ -30,6 +30,10 @@ local plugins = {
         -- Optional but recommended for CI configuration
         "circleci-yaml-language-server",
         "gitlab-ci-ls",
+
+        -- Markdown
+        "marksman",
+        "mdformat",
       },
     },
   },
