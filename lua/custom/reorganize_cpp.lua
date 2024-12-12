@@ -91,7 +91,7 @@ local function reorganize_cpp_files()
         in_class = true
         vim.list_extend(final_content, class_comment)
         table.insert(final_content, line)
-        table.insert(final_content, "{")
+        -- table.insert(final_content "{")
       elseif in_class then
         if line:match("^%s*public:") then
           current_access = "public"
@@ -120,9 +120,9 @@ local function reorganize_cpp_files()
 
     table.insert(final_content, "};")
 
-    if namespace_name then
-      table.insert(final_content, string.format("} // namespace %s", namespace_name))
-    end
+    -- if namespace_name then
+    --   table.insert(final_content, string.format("} // namespace %s", namespace_name))
+    -- end
 
     -- Set the buffer content
     vim.api.nvim_buf_set_lines(0, 0, -1, false, final_content)
