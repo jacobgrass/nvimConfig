@@ -1,3 +1,5 @@
+local vim = vim
+
 local function create_definition()
   -- Save current view state
   local state = vim.fn.winsaveview()
