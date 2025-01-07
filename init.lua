@@ -25,5 +25,7 @@ local opt = vim.opt
 opt.foldmethod = "expr"
 opt.foldexpr = "nvim_treesitter#foldexpr()"
 
-require("custom.reorganize_cpp")
 require("custom.create_definition")
+require("custom.create_getters_setters_cpp")
+require("custom.mdformat")
+require("custom.reorganize_cpp")

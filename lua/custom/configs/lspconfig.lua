@@ -54,7 +54,7 @@ lspconfig.yamlls.setup {
     yaml = {
       schemas = {
         ["https://json.schemastore.org/github-workflow.json"] = "/.github/workflows/*",
-        ["https://json.schemastore.org/gitlab-ci.json"] = "/.gitlab-ci.yml",
+        ["https://gitlab.com/gitlab-org/gitlab/-/raw/master/app/assets/javascripts/editor/schema/ci.json"] = "/.gitlab-ci.yml",
       },
     },
   },
@@ -75,3 +75,9 @@ lspconfig.marksman.setup {
 --   on_attach = on_attach,
 --   capabilities = capabilities,
 -- }
+
+-- Fortran
+lspconfig.fortls.setup {
+  on_attach = on_attach,
+  capabilities = capabilities,
+}

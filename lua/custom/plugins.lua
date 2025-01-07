@@ -11,6 +11,7 @@ local plugins = {
         "lua-language-server",
         "python-lsp-server",
         "yaml-language-server",
+        "fortls",
 
         -- DAP
         "codelldb",
@@ -20,6 +21,7 @@ local plugins = {
         "pylint",
         "cmakelint",
         "protolint",
+        "fprettify",
 
         -- Formatters
         "clang-format",
