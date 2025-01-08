@@ -26,6 +26,10 @@ M.general = {
       require('cmp').setup.buffer { enabled = vim.b.cmp_enabled }
     end, "Toggle autocorrect (toggle correction)" },
 
+    ["<leader>tn"] = { ":tabNext<Enter>", "Next tab" },
+    ["<leader>t+"] = { ":tabnew<Enter>", "New tab" },
+    ["<leader>tx"] = { ":tabclose<Enter>", "Close tab" },
+
 
     ["<Esc>"] = { "<cmd> noh <CR>", "Clear highlights" },
     -- switch between windows
@@ -265,7 +269,7 @@ M.lspconfig = {
 
     ["<leader>lf"] = {
       function()
-        vim.diagnostic.open_float { border = "rounded", focusable = true}
+        vim.diagnostic.open_float { border = "rounded", focusable = true }
       end,
       "Floating diagnostic",
     },
