@@ -28,4 +28,5 @@ opt.foldexpr = "nvim_treesitter#foldexpr()"
 require("custom.create_definition")
 require("custom.create_getters_setters_cpp")
 require("custom.mdformat")
+require("custom.fortranformat")
 require("custom.reorganize_cpp")
