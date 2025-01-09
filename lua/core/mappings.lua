@@ -63,9 +63,16 @@ M.general = {
 
     ["<leader>fm"] = {
       function()
-        vim.lsp.buf.format { async = true }
+        local filetype = vim.bo.filetype
+        if filetype == "markdown" then
+          vim.cmd("Mdformat")
+        elseif filetype == "fortran" then
+          vim.cmd("FFormat")
+        else
+          vim.lsp.buf.format { async = true }
+        end
       end,
-      "LSP formatting",
+      "Format file"
     },
   },
 
