@@ -68,7 +68,7 @@ M.general = {
           vim.cmd("Mdformat")
         elseif filetype == "fortran" then
           vim.cmd("FFormat")
-        elseif filetype == "latex" or filetype == "tex" then
+        elseif filetype == "latex" or filetype == "tex" or filetype == "plaintex" then
           vim.cmd("LFormat")
         else
           vim.lsp.buf.format { async = true }

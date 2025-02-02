@@ -1,13 +1,11 @@
 local vim = vim
--- Function to format the current file using latexformat and reload it in the buffer
+
 local function format_and_reload()
+  -- Save current cursor position
+  local cursor_pos = vim.fn.getpos('.')
+
   -- Write first
   vim.cmd('write')
-
-  -- Set width to 80
-  vim.cmd('set textwidth=80')
-  vim.cmd('normal! gg')
-  vim.cmd('normal! gqG')
 
   -- Get the current file name
   local filepath = vim.fn.expand('%:p')
@@ -18,11 +16,15 @@ local function format_and_reload()
     return
   end
 
-  -- Run latexformat on the file with the desired width (80)
-  local cmd = string.format('latexindent "%s"', filepath)
+  -- Run dos2unix first
+  local dos2unix_cmd = string.format('dos2unix "%s"', filepath)
+  vim.fn.system(dos2unix_cmd)
+
+  -- Run latexindent with text wrapping config
+  local cmd = string.format('latexindent -m -w -l ~/.config/nvim/lua/custom/latex_indent.yaml "%s" ', filepath)
   local result = vim.fn.system(cmd)
 
-  -- Check for error in the latexformat command
+  -- Check for error in the latexindent command
   if vim.v.shell_error ~= 0 then
     print("Error running latexindent: " .. result)
     return
@@ -30,12 +32,16 @@ local function format_and_reload()
 
   -- Reload the file into the current buffer
   vim.cmd('edit!')
+
+  -- Restore cursor position
+  vim.fn.setpos('.', cursor_pos)
+
   print("File formatted with latexindent and reloaded")
 end
 
--- Define the :latexformat command
+-- Define the :LFormat command
 vim.api.nvim_create_user_command(
   'LFormat',
   format_and_reload,
-  { desc = "Format the current latex file with latexindent and reload it" }
+  { desc = "Format the current latex file with latexindent and wrap to 80 characters" }
 )
