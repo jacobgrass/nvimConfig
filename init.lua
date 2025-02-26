@@ -22,8 +22,9 @@ require "plugins"
 local vim = vim
 local opt = vim.opt
 
--- opt.foldmethod = "expr"
--- opt.foldexpr = "nvim_treesitter#foldexpr()"
+opt.foldmethod = "expr"
+opt.foldexpr = "nvim_treesitter#foldexpr()"
+opt.foldlevel = 5
 opt.rnu = true
 
 require("custom.create_definition")

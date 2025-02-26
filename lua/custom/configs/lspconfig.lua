@@ -7,6 +7,11 @@ local lspconfig = require("lspconfig")
 
 -- Existing clangd setup
 lspconfig.clangd.setup {
+  cmd = {
+    "clangd",
+    "--compile-commands-dir=build",
+    "--query-driver=/usr/bin/gcc"
+  },
   on_attach = function(client, bufnr)
     -- client.server_capabilities.signatureHelpProvider = false
     on_attach(client, bufnr)
@@ -82,4 +87,3 @@ lspconfig.fortls.setup {
   on_attach = on_attach,
   capabilities = capabilities,
 }
-

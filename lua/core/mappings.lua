@@ -61,6 +61,10 @@ M.general = {
     ["<leader>b"] = { "<cmd> enew <CR>", "New buffer" },
     ["<leader>ch"] = { "<cmd> NvCheatsheet <CR>", "Mapping cheatsheet" },
 
+
+    ["<leader>lx"] = { ":LspStop<Enter>", "Stop LSP" },
+    ["<leader>l+"] = { ":LspStart<Enter>", "Start LSP" },
+
     ["<leader>fm"] = {
       function()
         local filetype = vim.bo.filetype
