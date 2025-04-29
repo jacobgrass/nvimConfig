@@ -12,6 +12,8 @@ local plugins = {
         "python-lsp-server",
         "yaml-language-server",
         "fortls",
+        "docker-compose-language-service",
+        "dockerfile-language-service",
 
         -- DAP
         "codelldb",

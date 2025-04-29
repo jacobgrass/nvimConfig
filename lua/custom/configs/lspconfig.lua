@@ -87,3 +87,15 @@ lspconfig.fortls.setup {
   on_attach = on_attach,
   capabilities = capabilities,
 }
+
+lspconfig.docker_compose_language_service.setup{
+  on_attach = on_attach,
+  capabilities = capabilities,
+  filetypes = { "docker-compose.yml" },
+}
+
+lspconfig.dockerls.setup{
+  on_attach = on_attach,
+  capabilities = capabilities,
+  filetypes = { "dockerfile" },
+}
