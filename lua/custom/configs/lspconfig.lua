@@ -27,7 +27,7 @@ lspconfig.clangd.setup {
     end
   end,
   capabilities = capabilities,
-  filetypes = { "c", "cpp", "objc", "objcpp", "cuda", "proto" },
+  filetypes = { "c", "cpp", "objc", "objcpp", "cuda", "proto", "javascript" },
 }
 
 -- Add CMAKE setup
