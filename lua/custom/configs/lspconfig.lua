@@ -101,6 +101,12 @@ lspconfig.dockerls.setup {
   filetypes = { "dockerfile" },
 }
 
+lspconfig.postgres_lsp.setup {
+  on_attach = on_attach,
+  capabilities = capabilities,
+  filetypes = { "sql" },
+}
+
 -- 󰄳 C# / OmniSharp
 lspconfig.omnisharp.setup {
   on_attach = function(client, bufnr)
