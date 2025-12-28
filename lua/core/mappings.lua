@@ -21,10 +21,32 @@ M.general = {
     ["<leader>cf"] = { "zC", "Close Folds" },
     ["<leader>of"] = { "zO", "Open Folds" },
 
-    ["<leader>tc"] = { function()
-      vim.b.cmp_enabled = not vim.b.cmp_enabled
-      require('cmp').setup.buffer { enabled = vim.b.cmp_enabled }
-    end, "Toggle autocorrect (toggle correction)" },
+    ["<leader>tc"] = {
+      function()
+        -- "Autocorrect" here is actually completion (nvim-cmp).
+        -- nvim-cmp is lazy-loaded on InsertEnter, so load it on-demand for this toggle.
+        pcall(function()
+          require("lazy").load { plugins = { "nvim-cmp" } }
+        end)
+
+        local ok_cmp, cmp = pcall(require, "cmp")
+        if not ok_cmp then
+          vim.notify("nvim-cmp is not available", vim.log.levels.WARN)
+          return
+        end
+
+        local enabled = vim.b.cmp_enabled
+        if enabled == nil then
+          enabled = true -- default behavior: cmp is enabled unless explicitly disabled
+        end
+
+        enabled = not enabled
+        vim.b.cmp_enabled = enabled
+        cmp.setup.buffer { enabled = enabled }
+        vim.notify(("Completion %s"):format(enabled and "enabled" or "disabled"), vim.log.levels.INFO)
+      end,
+      "Toggle completion (nvim-cmp)",
+    },
 
     ["<leader>tn"] = { ":tabNext<Enter>", "Next tab" },
     ["<leader>t+"] = { ":tabnew<Enter>", "New tab" },
@@ -63,7 +85,32 @@ M.general = {
 
 
     ["<leader>lx"] = { ":LspStop<Enter>", "Stop LSP" },
-    ["<leader>l+"] = { ":LspStart<Enter>", "Start LSP" },
+    ["<leader>l+"] = {
+      function()
+        -- Neovim 0.11+: nvim-lspconfig's :LspStart defaults to vim.lsp.enable()
+        -- and can error when called with no args if configs weren't registered via vim.lsp.config.
+        -- This fallback starts servers configured via lspconfig.*.setup for the current filetype.
+        local ok_util, util = pcall(require, "lspconfig.util")
+        if not ok_util then
+          vim.notify("lspconfig.util not available", vim.log.levels.WARN)
+          return
+        end
+
+        local configs = util.get_config_by_ft(vim.bo.filetype) or {}
+        if #configs == 0 then
+          vim.notify(("No LSP configs for filetype '%s'"):format(vim.bo.filetype), vim.log.levels.INFO)
+          return
+        end
+
+        for _, cfg in ipairs(configs) do
+          pcall(function()
+            cfg.launch()
+          end)
+        end
+        vim.notify("LSP started for current filetype", vim.log.levels.INFO)
+      end,
+      "Start LSP (current filetype)",
+    },
 
     ["<leader>fm"] = {
       function()

@@ -63,6 +63,7 @@ local plugins = {
   },
   {
     "neovim/nvim-lspconfig",
+    event = "User FilePost",
     config = function()
       require "plugins.configs.lspconfig"
       require "custom.configs.lspconfig"
@@ -108,6 +109,11 @@ local plugins = {
         handlers = {
           -- Default handlers
           default = function(config)
+            -- clangd is configured explicitly in `custom.configs.lspconfig`
+            -- Avoid double-setup / conflicting settings.
+            if config.name == "clangd" then
+              return
+            end
             require("lspconfig")[config.name].setup(config)
           end,
         },
@@ -116,7 +122,6 @@ local plugins = {
         -- Optional: List of LSP servers to configure
         servers = {
           -- Example server configurations
-          clangd = {},
           cmake = {},
           lua_ls = {},
           -- Add other servers as needed

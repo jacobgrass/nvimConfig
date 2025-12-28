@@ -5,29 +5,103 @@ local capabilities = base.capabilities
 
 local lspconfig = require("lspconfig")
 local util = require("lspconfig.util") -- For root_dir patterns
+local uv = vim.uv or vim.loop
 
 -- Common root directory function for .NET projects
 local csharp_root_dir = function(fname)
   return util.root_pattern("*.sln", "*.csproj", ".git")(fname)
 end
 
--- Existing clangd setup
-lspconfig.clangd.setup {
-  cmd = {
-    "clangd",
-    "--compile-commands-dir=build",
-    "--query-driver=/usr/bin/gcc"
-  },
-  on_attach = function(client, bufnr)
-    -- client.server_capabilities.signatureHelpProvider = false
-    on_attach(client, bufnr)
-    -- Disable diagnostics for proto files
-    if vim.bo[bufnr].filetype == "proto" then
-      vim.diagnostic.disable(bufnr)
+local function file_exists(path)
+  return path and uv.fs_stat(path) ~= nil
+end
+
+local function find_compile_commands_dir(root)
+  if not root or root == "" then
+    return nil
+  end
+
+  -- Allow manual override per-machine if needed
+  if type(vim.g.clangd_compile_commands_dir) == "string" and vim.g.clangd_compile_commands_dir ~= "" then
+    local overridden = util.path.join(root, vim.g.clangd_compile_commands_dir)
+    if file_exists(util.path.join(overridden, "compile_commands.json")) then
+      return overridden
     end
+  end
+
+  if file_exists(util.path.join(root, "compile_commands.json")) then
+    return root
+  end
+
+  -- Common build dirs across Linux + Windows + CMake presets
+  local candidates = {
+    { "build" },
+    { "Build" },
+    { "out", "build" },
+    { "cmake-build-debug" },
+    { "cmake-build-release" },
+    { "build", "Debug" },
+    { "build", "Release" },
+    { "build", "RelWithDebInfo" },
+    { "build", "MinSizeRel" },
+    -- Common CMake presets naming
+    { "build", "x64-Debug" },
+    { "build", "x64-Release" },
+  }
+
+  for _, parts in ipairs(candidates) do
+    local dir = util.path.join(root, unpack(parts))
+    if file_exists(util.path.join(dir, "compile_commands.json")) then
+      return dir
+    end
+  end
+
+  return nil
+end
+
+local function clangd_cmd(root)
+  local is_windows = vim.fn.has("win32") ~= 0
+  local cmd = {
+    "clangd",
+    "--background-index",
+    "--clang-tidy",
+    "--completion-style=detailed",
+    "--header-insertion=iwyu",
+  }
+
+  local cc_dir = find_compile_commands_dir(root)
+  if cc_dir then
+    table.insert(cmd, "--compile-commands-dir=" .. cc_dir)
+  end
+
+  if is_windows then
+    -- Help clangd trust/understand GCC/Clang-family drivers on Windows where used.
+    -- (MSVC projects should already be covered via compile_commands.json.)
+    table.insert(
+      cmd,
+      "--query-driver=C:/Program Files/LLVM/bin/clang*.exe,C:/mingw64/bin/*g++.exe,C:/mingw64/bin/*gcc.exe"
+    )
+  else
+    table.insert(
+      cmd,
+      "--query-driver=/usr/bin/clang*,/usr/bin/gcc*,/usr/bin/g++*,/usr/local/bin/clang*,/usr/local/bin/gcc*,/usr/local/bin/g++*"
+    )
+  end
+
+  return cmd
+end
+
+-- clangd (C/C++)
+lspconfig.clangd.setup {
+  root_dir = function(fname)
+    return util.root_pattern("compile_commands.json", "compile_flags.txt", "CMakeLists.txt", ".git")(fname)
   end,
+  on_new_config = function(new_config, root_dir)
+    new_config.cmd = clangd_cmd(root_dir)
+  end,
+  on_attach = on_attach,
   capabilities = capabilities,
-  filetypes = { "c", "cpp", "objc", "objcpp", "cuda", "proto", "javascript" },
+  filetypes = { "c", "cpp", "objc", "objcpp", "cuda" },
 }
 
 -- Add CMAKE setup
@@ -127,7 +201,7 @@ lspconfig.omnisharp.setup {
   -- The cmd might be automatically handled if you use mason-lspconfig.
   -- If omnisharp is in your PATH, this (or lspconfig's default) should work.
   -- Ensure 'omnisharp' executable (or omnisharp.sh script) is found.
-  cmd = { "omnisharp", "--languageserver", "--hostPID", tostring(vim.v.pproccessid or vim.fn.getpid()) },
+  cmd = { "omnisharp", "--languageserver", "--hostPID", tostring(vim.fn.getpid()) },
   filetypes = { "cs", "vb" }, -- C# and VB.NET
   root_dir = csharp_root_dir,
   -- Enable modern .NET features. These are often defaults in newer omnisharp-roslyn but explicit can be good.
