@@ -29,6 +29,17 @@ require "plugins"
 local vim = vim
 local opt = vim.opt
 
+
+if vim.fn.has("win32") == 1 then
+  opt.shell = "powershell.exe"
+  opt.shellcmdflag = "-NoLogo -NoProfile -ExecutionPolicy RemoteSigned -Command"
+  opt.shellredir = "2>&1 | Out-File -Encoding UTF8 %s"
+  opt.shellpipe = "2>&1 | Out-File -Encoding UTF8 %s"
+  opt.shellquote = ""
+  opt.shellxquote = ""
+end
+
+
 -- Treesitter-based folding (works even when nvim-treesitter is lazy-loaded)
 -- Uses the built-in foldexpr in Neovim 0.11+ (does not depend on Vimscript funcs).
 vim.api.nvim_create_autocmd({ "FileType" }, {
