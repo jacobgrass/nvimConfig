@@ -104,6 +104,21 @@ local plugins = {
       "neovim/nvim-lspconfig",
     },
     config = function()
+      local base = require("plugins.configs.lspconfig")
+
+      local function merged_capabilities(extra)
+        return vim.tbl_deep_extend("force", {}, base.capabilities, extra or {})
+      end
+
+      local function compose_on_attach(user_on_attach)
+        return function(client, bufnr)
+          base.on_attach(client, bufnr)
+          if type(user_on_attach) == "function" then
+            user_on_attach(client, bufnr)
+          end
+        end
+      end
+
       require("mason-bridge").setup({
         -- Optional configuration options
         handlers = {
@@ -114,6 +129,8 @@ local plugins = {
             if config.name == "clangd" then
               return
             end
+            config.capabilities = merged_capabilities(config.capabilities)
+            config.on_attach = compose_on_attach(config.on_attach)
             require("lspconfig")[config.name].setup(config)
           end,
         },
