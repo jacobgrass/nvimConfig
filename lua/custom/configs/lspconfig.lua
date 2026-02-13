@@ -3,9 +3,13 @@ local base = require("plugins.configs.lspconfig")
 local on_attach = base.on_attach
 local capabilities = base.capabilities
 
-local lspconfig = require("lspconfig")
 local util = require("lspconfig.util") -- For root_dir patterns
 local uv = vim.uv or vim.loop
+
+local function setup(server, config)
+  vim.lsp.config(server, config)
+  vim.lsp.enable(server)
+end
 
 -- Common root directory function for .NET projects
 local csharp_root_dir = function(fname)
@@ -92,7 +96,7 @@ local function clangd_cmd(root)
 end
 
 -- clangd (C/C++)
-lspconfig.clangd.setup {
+setup("clangd", {
   root_dir = function(fname)
     return util.root_pattern("compile_commands.json", "compile_flags.txt", "CMakeLists.txt", ".git")(fname)
   end,
@@ -102,40 +106,40 @@ lspconfig.clangd.setup {
   on_attach = on_attach,
   capabilities = capabilities,
   filetypes = { "c", "cpp", "objc", "objcpp", "cuda" },
-}
+})
 
 -- Add CMAKE setup
-lspconfig.cmake.setup {
+setup("cmake", {
   on_attach = on_attach,
   capabilities = capabilities,
-  filetypes = { "cmake", "CMakeLists.txt" },
   init_options = {
     buildDirectory = "build",
   },
-}
+})
 
 -- Python
-lspconfig.pylsp.setup {
+setup("pylsp", {
   on_attach = on_attach,
   capabilities = capabilities,
-}
+})
 
 -- Lua
-lspconfig.lua_ls.setup {
+setup("lua_ls", {
   on_attach = on_attach,
   capabilities = capabilities,
-}
+})
 
 -- JSON
-lspconfig.jsonls.setup {
+setup("jsonls", {
   on_attach = on_attach,
   capabilities = capabilities,
-}
+})
 
 -- YAML
-lspconfig.yamlls.setup {
+setup("yamlls", {
   on_attach = on_attach,
   capabilities = capabilities,
+  filetypes = { "yaml" },
   settings = {
     yaml = {
       schemas = {
@@ -144,45 +148,40 @@ lspconfig.yamlls.setup {
       },
     },
   },
-}
+})
 
 -- Bash
-lspconfig.bashls.setup {
+setup("bashls", {
   on_attach = on_attach,
   capabilities = capabilities,
-}
+})
 
-lspconfig.marksman.setup {
+setup("marksman", {
   on_attach = on_attach,
   capabilities = capabilities,
-}
+  filetypes = { "markdown" },
+})
 
 -- Fortran
-lspconfig.fortls.setup {
+setup("fortls", {
   on_attach = on_attach,
   capabilities = capabilities,
-}
+})
 
-lspconfig.docker_compose_language_service.setup {
+setup("docker_compose_language_service", {
   on_attach = on_attach,
   capabilities = capabilities,
-  filetypes = { "docker-compose.yml" },
-}
+  filetypes = { "yaml" },
+})
 
-lspconfig.dockerls.setup {
+setup("dockerls", {
   on_attach = on_attach,
   capabilities = capabilities,
   filetypes = { "dockerfile" },
-}
-
-lspconfig.postgres_lsp.setup {
-  on_attach = on_attach,
-  capabilities = capabilities,
-  filetypes = { "sql" },
-}
+})
 
 -- 󰄳 C# / OmniSharp
-lspconfig.omnisharp.setup {
+setup("omnisharp", {
   on_attach = function(client, bufnr)
     on_attach(client, bufnr) -- Call your base on_attach
 
@@ -201,7 +200,7 @@ lspconfig.omnisharp.setup {
   -- The cmd might be automatically handled if you use mason-lspconfig.
   -- If omnisharp is in your PATH, this (or lspconfig's default) should work.
   -- Ensure 'omnisharp' executable (or omnisharp.sh script) is found.
-  cmd = { "omnisharp", "--languageserver", "--hostPID", tostring(vim.fn.getpid()) },
+  cmd = { "OmniSharp", "--languageserver", "--hostPID", tostring(vim.fn.getpid()) },
   filetypes = { "cs", "vb" }, -- C# and VB.NET
   root_dir = csharp_root_dir,
   -- Enable modern .NET features. These are often defaults in newer omnisharp-roslyn but explicit can be good.
@@ -218,9 +217,9 @@ lspconfig.omnisharp.setup {
   --     "OrganizeImports": true
   --   }
   -- }
-}
+})
 
-lspconfig.eslint.setup {
+setup("eslint", {
   capabilities = capabilities,
   filetypes = { "typescriptreact","typescript" },
 
@@ -231,4 +230,4 @@ lspconfig.eslint.setup {
       command = "EslintFixAll",
     })
   end,
-}
+})

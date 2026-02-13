@@ -131,7 +131,8 @@ local plugins = {
             end
             config.capabilities = merged_capabilities(config.capabilities)
             config.on_attach = compose_on_attach(config.on_attach)
-            require("lspconfig")[config.name].setup(config)
+            vim.lsp.config(config.name, config)
+            vim.lsp.enable(config.name)
           end,
         },
         -- Automatically install LSP servers
@@ -145,6 +146,11 @@ local plugins = {
         },
       })
     end,
+  },
+  {
+    "echasnovski/mini.icons",
+    event = "VeryLazy",
+    opts = {},
   },
 }
 

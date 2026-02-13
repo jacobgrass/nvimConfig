@@ -7,6 +7,20 @@ end)
 
 require "core"
 
+vim.filetype.add({
+  extension = {
+    mdx = "markdown.mdx",
+  },
+  filename = {
+    ["docker-compose.yml"] = "yaml.docker-compose",
+    ["docker-compose.yaml"] = "yaml.docker-compose",
+  },
+  pattern = {
+    [".*%.gitlab%-ci%.ya?ml"] = "yaml.gitlab",
+    [".*helm%-values%.ya?ml"] = "yaml.helm-values",
+  },
+})
+
 local custom_init_path = vim.api.nvim_get_runtime_file("lua/custom/init.lua", false)[1]
 
 if custom_init_path then
