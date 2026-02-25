@@ -5,10 +5,23 @@ local capabilities = base.capabilities
 
 local util = require("lspconfig.util") -- For root_dir patterns
 local uv = vim.uv or vim.loop
+local ok_lspconfig, lspconfig = pcall(require, "lspconfig")
+local go_format_group = vim.api.nvim_create_augroup("GoLspFormatOnSave", { clear = true })
+local html_format_group = vim.api.nvim_create_augroup("HtmlLspFormatOnSave", { clear = true })
 
 local function setup(server, config)
-  vim.lsp.config(server, config)
-  vim.lsp.enable(server)
+  if ok_lspconfig and lspconfig[server] and type(lspconfig[server].setup) == "function" then
+    lspconfig[server].setup(config)
+    return
+  end
+
+  if type(vim.lsp.config) == "function" and type(vim.lsp.enable) == "function" then
+    vim.lsp.config(server, config)
+    vim.lsp.enable(server)
+    return
+  end
+
+  vim.notify(("Unable to configure LSP server '%s'"):format(server), vim.log.levels.ERROR)
 end
 
 -- Common root directory function for .NET projects
@@ -19,6 +32,55 @@ end
 local function file_exists(path)
   return path and uv.fs_stat(path) ~= nil
 end
+
+local function format_html_with_prettier(bufnr)
+  local prettier = vim.fn.exepath("prettier")
+  if prettier == "" then
+    vim.notify("prettier not found in PATH", vim.log.levels.WARN)
+    return
+  end
+
+  local filepath = vim.api.nvim_buf_get_name(bufnr)
+  if filepath == "" then
+    return
+  end
+
+  local plugin_path = vim.fn.stdpath("data")
+    .. "/mason/packages/prettier/node_modules/prettier-plugin-organize-attributes/lib/index.js"
+
+  local cmd = {
+    prettier,
+    "--stdin-filepath",
+    filepath,
+    "--attribute-sort",
+    "ASC",
+  }
+
+  if file_exists(plugin_path) then
+    table.insert(cmd, "--plugin")
+    table.insert(cmd, plugin_path)
+  end
+
+  local input = table.concat(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false), "\n")
+  local result = vim.system(cmd, { stdin = input, text = true }):wait()
+
+  if result.code ~= 0 then
+    vim.notify("prettier format failed: " .. (result.stderr or "unknown error"), vim.log.levels.WARN)
+    return
+  end
+
+  local formatted = result.stdout or ""
+  if formatted:sub(-1) == "\n" then
+    formatted = formatted:sub(1, -2)
+  end
+
+  local new_lines = vim.split(formatted, "\n", { plain = true })
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, new_lines)
+end
+
+vim.api.nvim_create_user_command("HtmlFormat", function()
+  format_html_with_prettier(vim.api.nvim_get_current_buf())
+end, { desc = "Format HTML with prettier (deterministic attribute order)" })
 
 local function find_compile_commands_dir(root)
   if not root or root == "" then
@@ -135,6 +197,29 @@ setup("jsonls", {
   capabilities = capabilities,
 })
 
+-- HTML
+setup("html", {
+  on_attach = function(client, bufnr)
+    on_attach(client, bufnr)
+    client.server_capabilities.documentFormattingProvider = false
+
+    vim.api.nvim_clear_autocmds { group = html_format_group, buffer = bufnr }
+    vim.api.nvim_create_autocmd("BufWritePre", {
+      group = html_format_group,
+      buffer = bufnr,
+      callback = function()
+        format_html_with_prettier(bufnr)
+      end,
+      desc = "Format HTML files with prettier before save",
+    })
+  end,
+  capabilities = capabilities,
+  filetypes = { "html" },
+  init_options = {
+    provideFormatter = true,
+  },
+})
+
 -- YAML
 setup("yamlls", {
   on_attach = on_attach,
@@ -154,6 +239,44 @@ setup("yamlls", {
 setup("bashls", {
   on_attach = on_attach,
   capabilities = capabilities,
+})
+
+-- Go
+setup("gopls", {
+  on_attach = function(client, bufnr)
+    on_attach(client, bufnr)
+
+    vim.api.nvim_clear_autocmds { group = go_format_group, buffer = bufnr }
+    vim.api.nvim_create_autocmd("BufWritePre", {
+      group = go_format_group,
+      buffer = bufnr,
+      callback = function()
+        vim.lsp.buf.format({
+          bufnr = bufnr,
+          async = false,
+          timeout_ms = 3000,
+          filter = function(format_client)
+            return format_client.name == "gopls"
+          end,
+        })
+      end,
+      desc = "Format Go files with gopls before save",
+    })
+  end,
+  capabilities = capabilities,
+  filetypes = { "go", "gomod", "gowork", "gotmpl" },
+  root_dir = util.root_pattern("go.work", "go.mod", ".git"),
+  settings = {
+    gopls = {
+      gofumpt = true,
+      usePlaceholders = true,
+      completeUnimported = true,
+      analyses = {
+        unusedparams = true,
+      },
+      staticcheck = true,
+    },
+  },
 })
 
 setup("marksman", {

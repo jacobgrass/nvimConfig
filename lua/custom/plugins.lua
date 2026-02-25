@@ -8,17 +8,20 @@ local plugins = {
         "clangd",
         "cmake-language-server",
         "json-lsp",
+        "html-lsp",
         "lua-language-server",
         "python-lsp-server",
         "yaml-language-server",
         "fortls",
-"docker-compose-language-service",
+        "docker-compose-language-service",
         "dockerfile-language-service",
         "bashls",
         "omnisharp",
+        "gopls",
 
         -- DAP
         "codelldb",
+        "delve",
 
         -- Linters
         "cpplint",
@@ -31,6 +34,9 @@ local plugins = {
         "clang-format",
         "cmakelang", -- Provides cmake-format
         "yamlfmt",
+        "goimports",
+        "gofumpt",
+        "prettier",
         "buf",
 
         -- Optional but recommended for CI configuration
@@ -105,6 +111,7 @@ local plugins = {
     },
     config = function()
       local base = require("plugins.configs.lspconfig")
+      local ok_lspconfig, lspconfig = pcall(require, "lspconfig")
 
       local function merged_capabilities(extra)
         return vim.tbl_deep_extend("force", {}, base.capabilities, extra or {})
@@ -126,13 +133,17 @@ local plugins = {
           default = function(config)
             -- clangd is configured explicitly in `custom.configs.lspconfig`
             -- Avoid double-setup / conflicting settings.
-            if config.name == "clangd" then
+            if config.name == "clangd" or config.name == "gopls" or config.name == "html" then
               return
             end
             config.capabilities = merged_capabilities(config.capabilities)
             config.on_attach = compose_on_attach(config.on_attach)
-            vim.lsp.config(config.name, config)
-            vim.lsp.enable(config.name)
+            if ok_lspconfig and lspconfig[config.name] and type(lspconfig[config.name].setup) == "function" then
+              lspconfig[config.name].setup(config)
+            else
+              vim.lsp.config(config.name, config)
+              vim.lsp.enable(config.name)
+            end
           end,
         },
         -- Automatically install LSP servers

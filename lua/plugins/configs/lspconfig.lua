@@ -3,6 +3,7 @@ require "nvchad.lsp"
 
 local M = {}
 local utils = require "core.utils"
+local ok_lspconfig, lspconfig = pcall(require, "lspconfig")
 
 -- export on_attach & capabilities for custom lspconfigs
 M.on_attach = function(client, bufnr)
@@ -40,7 +41,7 @@ M.capabilities.textDocument.completion.completionItem = {
   },
 }
 
-vim.lsp.config("lua_ls", {
+local lua_ls_config = {
   on_init = M.on_init,
   on_attach = M.on_attach,
   capabilities = M.capabilities,
@@ -62,7 +63,13 @@ vim.lsp.config("lua_ls", {
       },
     },
   },
-})
-vim.lsp.enable("lua_ls")
+}
+
+if ok_lspconfig and lspconfig.lua_ls and type(lspconfig.lua_ls.setup) == "function" then
+  lspconfig.lua_ls.setup(lua_ls_config)
+else
+  vim.lsp.config("lua_ls", lua_ls_config)
+  vim.lsp.enable("lua_ls")
+end
 
 return M

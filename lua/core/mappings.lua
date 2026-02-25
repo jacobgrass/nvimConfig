@@ -117,6 +117,8 @@ M.general = {
         local filetype = vim.bo.filetype
         if filetype == "markdown" then
           vim.cmd("Mdformat")
+        elseif filetype == "html" then
+          vim.cmd("HtmlFormat")
         elseif filetype == "fortran" then
           vim.cmd("FFormat")
         elseif filetype == "latex" or filetype == "tex" or filetype == "plaintex" then
