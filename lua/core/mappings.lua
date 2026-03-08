@@ -119,6 +119,13 @@ M.general = {
           vim.cmd("Mdformat")
         elseif filetype == "html" then
           vim.cmd("HtmlFormat")
+        elseif
+          filetype == "javascript"
+          or filetype == "javascriptreact"
+          or filetype == "typescript"
+          or filetype == "typescriptreact"
+        then
+          vim.cmd("TsJsFormat")
         elseif filetype == "fortran" then
           vim.cmd("FFormat")
         elseif filetype == "latex" or filetype == "tex" or filetype == "plaintex" then

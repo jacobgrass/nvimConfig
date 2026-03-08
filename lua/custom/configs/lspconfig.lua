@@ -8,6 +8,7 @@ local uv = vim.uv or vim.loop
 local ok_lspconfig, lspconfig = pcall(require, "lspconfig")
 local go_format_group = vim.api.nvim_create_augroup("GoLspFormatOnSave", { clear = true })
 local html_format_group = vim.api.nvim_create_augroup("HtmlLspFormatOnSave", { clear = true })
+local ts_js_format_group = vim.api.nvim_create_augroup("TsJsFormatOnSave", { clear = true })
 
 local function setup(server, config)
   if ok_lspconfig and lspconfig[server] and type(lspconfig[server].setup) == "function" then
@@ -33,40 +34,68 @@ local function file_exists(path)
   return path and uv.fs_stat(path) ~= nil
 end
 
-local function format_html_with_prettier(bufnr)
-  local prettier = vim.fn.exepath("prettier")
-  if prettier == "" then
-    vim.notify("prettier not found in PATH", vim.log.levels.WARN)
-    return
+local function find_executable(name)
+  local path = vim.fn.exepath(name)
+  if path ~= "" then
+    return path
+  end
+
+  local is_windows = vim.fn.has("win32") == 1
+  local mason_data = vim.fn.stdpath("data") .. "/mason/"
+  local mason_bin = mason_data .. "bin/"
+  local candidates = { mason_bin .. name }
+
+  if is_windows then
+    table.insert(candidates, mason_bin .. name .. ".cmd")
+    table.insert(candidates, mason_bin .. name .. ".exe")
+  end
+
+  -- Some npm-based Mason packages expose the executable only in package-local .bin.
+  local mason_pkg_bin = mason_data .. "packages/" .. name .. "/node_modules/.bin/" .. name
+  table.insert(candidates, mason_pkg_bin)
+  if is_windows then
+    table.insert(candidates, mason_pkg_bin .. ".cmd")
+    table.insert(candidates, mason_pkg_bin .. ".exe")
+  end
+
+  for _, candidate in ipairs(candidates) do
+    if file_exists(candidate) then
+      return candidate
+    end
+  end
+
+  return nil
+end
+
+local function format_with_prettier(bufnr, extra_args)
+  local prettier = find_executable("prettier")
+  if not prettier then
+    vim.notify("prettier not found (PATH or Mason bin)", vim.log.levels.WARN)
+    return false
   end
 
   local filepath = vim.api.nvim_buf_get_name(bufnr)
   if filepath == "" then
-    return
+    return false
   end
-
-  local plugin_path = vim.fn.stdpath("data")
-    .. "/mason/packages/prettier/node_modules/prettier-plugin-organize-attributes/lib/index.js"
 
   local cmd = {
     prettier,
     "--stdin-filepath",
     filepath,
-    "--attribute-sort",
-    "ASC",
   }
 
-  if file_exists(plugin_path) then
-    table.insert(cmd, "--plugin")
-    table.insert(cmd, plugin_path)
+  if type(extra_args) == "table" and #extra_args > 0 then
+    vim.list_extend(cmd, extra_args)
   end
 
   local input = table.concat(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false), "\n")
   local result = vim.system(cmd, { stdin = input, text = true }):wait()
 
   if result.code ~= 0 then
-    vim.notify("prettier format failed: " .. (result.stderr or "unknown error"), vim.log.levels.WARN)
-    return
+    local stderr = (result.stderr or "unknown error"):gsub("%s+$", "")
+    vim.notify("prettier format failed: " .. stderr, vim.log.levels.WARN)
+    return false
   end
 
   local formatted = result.stdout or ""
@@ -74,13 +103,74 @@ local function format_html_with_prettier(bufnr)
     formatted = formatted:sub(1, -2)
   end
 
-  local new_lines = vim.split(formatted, "\n", { plain = true })
+  local new_lines = formatted == "" and { "" } or vim.split(formatted, "\n", { plain = true })
+  local view = vim.fn.winsaveview()
   vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, new_lines)
+  vim.fn.winrestview(view)
+  return true
+end
+
+local function format_html_with_prettier(bufnr)
+  local plugin_path = vim.fn.stdpath("data")
+    .. "/mason/packages/prettier/node_modules/prettier-plugin-organize-attributes/lib/index.js"
+
+  local extra_args = {
+    "--attribute-sort",
+    "ASC",
+  }
+
+  if file_exists(plugin_path) then
+    table.insert(extra_args, "--plugin")
+    table.insert(extra_args, plugin_path)
+  end
+
+  return format_with_prettier(bufnr, extra_args)
+end
+
+local js_ts_filetypes = {
+  javascript = true,
+  javascriptreact = true,
+  typescript = true,
+  typescriptreact = true,
+}
+
+local function is_js_ts_filetype(filetype)
+  return js_ts_filetypes[filetype] == true
+end
+
+local function run_eslint_fix_all(bufnr)
+  if vim.fn.exists(":EslintFixAll") ~= 2 then
+    return
+  end
+
+  local clients = vim.lsp.get_clients({ bufnr = bufnr, name = "eslint" })
+  if #clients == 0 then
+    return
+  end
+
+  pcall(vim.cmd, "silent! EslintFixAll")
+end
+
+local function format_ts_js_with_prettier(bufnr)
+  return format_with_prettier(bufnr)
 end
 
 vim.api.nvim_create_user_command("HtmlFormat", function()
   format_html_with_prettier(vim.api.nvim_get_current_buf())
 end, { desc = "Format HTML with prettier (deterministic attribute order)" })
+
+vim.api.nvim_create_user_command("TsJsFormat", function()
+  local bufnr = vim.api.nvim_get_current_buf()
+  local filetype = vim.bo[bufnr].filetype
+
+  if not is_js_ts_filetype(filetype) then
+    vim.notify(("TsJsFormat is only for JS/TS buffers (current: %s)"):format(filetype), vim.log.levels.INFO)
+    return
+  end
+
+  run_eslint_fix_all(bufnr)
+  format_ts_js_with_prettier(bufnr)
+end, { desc = "Format JS/TS with eslint fixes + prettier" })
 
 local function find_compile_commands_dir(root)
   if not root or root == "" then
@@ -220,6 +310,55 @@ setup("html", {
   },
 })
 
+local function setup_typescript_lsp()
+  local server_name = "ts_ls"
+  if ok_lspconfig then
+    if lspconfig.ts_ls and type(lspconfig.ts_ls.setup) == "function" then
+      server_name = "ts_ls"
+    elseif lspconfig.tsserver and type(lspconfig.tsserver.setup) == "function" then
+      server_name = "tsserver"
+    else
+      vim.notify("TypeScript LSP unavailable (missing ts_ls/tsserver config)", vim.log.levels.WARN)
+      return
+    end
+  end
+
+  local ts_server_bin = find_executable("typescript-language-server")
+  if not ts_server_bin then
+    vim.notify(
+      "typescript-language-server not found. Install it with :MasonInstall typescript-language-server",
+      vim.log.levels.WARN
+    )
+    return
+  end
+
+  setup(server_name, {
+    cmd = { ts_server_bin, "--stdio" },
+    on_attach = function(client, bufnr)
+      on_attach(client, bufnr)
+      client.server_capabilities.documentFormattingProvider = false
+      client.server_capabilities.documentRangeFormattingProvider = false
+
+      vim.api.nvim_clear_autocmds { group = ts_js_format_group, buffer = bufnr }
+      vim.api.nvim_create_autocmd("BufWritePre", {
+        group = ts_js_format_group,
+        buffer = bufnr,
+        callback = function()
+          run_eslint_fix_all(bufnr)
+          format_ts_js_with_prettier(bufnr)
+        end,
+        desc = "Format JS/TS files with prettier before save",
+      })
+    end,
+    capabilities = capabilities,
+    filetypes = { "javascript", "javascriptreact", "typescript", "typescriptreact" },
+    root_dir = util.root_pattern("tsconfig.json", "jsconfig.json", "package.json", ".git"),
+    single_file_support = true,
+  })
+end
+
+setup_typescript_lsp()
+
 -- YAML
 setup("yamlls", {
   on_attach = on_attach,
@@ -344,13 +483,11 @@ setup("omnisharp", {
 
 setup("eslint", {
   capabilities = capabilities,
-  filetypes = { "typescriptreact","typescript" },
+  filetypes = { "javascript", "javascriptreact", "typescriptreact", "typescript" },
 
   on_attach = function(client, bufnr)
     on_attach(client, bufnr)
-    vim.api.nvim_create_autocmd("BufWritePre", {
-      buffer = bufnr,
-      command = "EslintFixAll",
-    })
+    client.server_capabilities.documentFormattingProvider = false
+    client.server_capabilities.documentRangeFormattingProvider = false
   end,
 })

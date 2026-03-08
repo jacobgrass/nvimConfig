@@ -15,6 +15,8 @@ local plugins = {
         "fortls",
         "docker-compose-language-service",
         "dockerfile-language-service",
+        "typescript-language-server",
+        "eslint-lsp",
         "bashls",
         "omnisharp",
         "gopls",
@@ -133,7 +135,14 @@ local plugins = {
           default = function(config)
             -- clangd is configured explicitly in `custom.configs.lspconfig`
             -- Avoid double-setup / conflicting settings.
-            if config.name == "clangd" or config.name == "gopls" or config.name == "html" then
+            if
+              config.name == "clangd"
+              or config.name == "gopls"
+              or config.name == "html"
+              or config.name == "eslint"
+              or config.name == "ts_ls"
+              or config.name == "tsserver"
+            then
               return
             end
             config.capabilities = merged_capabilities(config.capabilities)
