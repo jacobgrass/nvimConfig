@@ -56,22 +56,36 @@ end
 
 -- Treesitter-based folding (works even when nvim-treesitter is lazy-loaded)
 -- Uses the built-in foldexpr in Neovim 0.11+ (does not depend on Vimscript funcs).
+-- IMPORTANT: do NOT call vim.treesitter.get_parser here — it *creates* a parser,
+-- which keeps memory attached to every buffer ever opened. Instead, only set
+-- foldexpr when a parser language is registered for the filetype, and let
+-- nvim-treesitter's own highlighter own the parser lifecycle.
 vim.api.nvim_create_autocmd({ "FileType" }, {
   group = vim.api.nvim_create_augroup("JgTreesitterFolds", { clear = true }),
   callback = function(args)
-    local ok = pcall(vim.treesitter.get_parser, args.buf)
-    if ok then
-      -- NOTE: foldmethod/foldexpr/foldlevel are window-local, not buffer-local.
-      -- Apply to every window currently showing this buffer.
-      for _, win in ipairs(vim.fn.win_findbuf(args.buf)) do
-        vim.wo[win].foldmethod = "expr"
-        vim.wo[win].foldexpr = "v:lua.vim.treesitter.foldexpr()"
-        -- keep files mostly unfolded by default; use zM/zR to close/open all
-        vim.wo[win].foldlevel = 99
-      end
+    local ft = vim.bo[args.buf].filetype
+    if ft == "" then return end
+    local lang = vim.treesitter.language.get_lang(ft)
+    if not lang then return end
+    -- Don't trigger parser allocation; just confirm a parser file exists.
+    local has_parser = pcall(vim.treesitter.language.add, lang)
+    if not has_parser then return end
+    for _, win in ipairs(vim.fn.win_findbuf(args.buf)) do
+      vim.wo[win].foldmethod = "expr"
+      vim.wo[win].foldexpr = "v:lua.vim.treesitter.foldexpr()"
+      vim.wo[win].foldlevel = 99
     end
   end,
 })
+
+-- Memory probe: <leader>mm prints process + Lua memory + LSP/buffer counts.
+vim.keymap.set("n", "<leader>mm", function()
+  collectgarbage("collect")
+  local rss_mb = (vim.uv or vim.loop).resident_set_memory() / 1024 / 1024
+  local lua_kb = collectgarbage("count")
+  print(string.format("nvim RSS %.0f MB | Lua %.1f MB | LSPs %d | bufs %d",
+    rss_mb, lua_kb / 1024, #vim.lsp.get_clients(), #vim.api.nvim_list_bufs()))
+end, { desc = "Memory snapshot" })
 opt.rnu = true
 
 require("custom.create_definition")

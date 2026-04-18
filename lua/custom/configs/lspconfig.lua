@@ -1,4 +1,27 @@
 local vim = vim
+
+-- Disable LSP file logging: $LOCALAPPDATA/nvim-data/lsp.log can grow unbounded
+-- and incurs disk I/O on every LSP message. Re-enable to "WARN" if debugging.
+vim.lsp.set_log_level("OFF")
+
+-- Shut down LSP clients that have no attached buffers. lspconfig keeps clients
+-- alive for the whole session by default; combined with single_file_support
+-- and large LSPs (clangd, omnisharp, ts_ls, gopls), this is a major source of
+-- RSS growth on Windows. Run shortly after BufDelete so other plugins finish
+-- their bookkeeping first.
+vim.api.nvim_create_autocmd("BufDelete", {
+  group = vim.api.nvim_create_augroup("JgLspIdleStop", { clear = true }),
+  callback = function()
+    vim.defer_fn(function()
+      for _, client in ipairs(vim.lsp.get_clients()) do
+        if vim.tbl_isempty(client.attached_buffers or {}) then
+          pcall(function() client:stop() end)
+        end
+      end
+    end, 500)
+  end,
+})
+
 local base = require("plugins.configs.lspconfig")
 local on_attach = base.on_attach
 local capabilities = base.capabilities
@@ -217,12 +240,18 @@ end
 
 local function clangd_cmd(root)
   local is_windows = vim.fn.has("win32") ~= 0
+  -- Memory-tuned flags for long-running sessions on Windows.
+  -- Drop --background-index (kept full project AST in RAM); keep clang-tidy.
+  -- Cap parallelism and result counts to bound memory growth.
   local cmd = {
     "clangd",
-    "--background-index",
     "--clang-tidy",
     "--completion-style=detailed",
     "--header-insertion=iwyu",
+    "--limit-references=100",
+    "--limit-results=20",
+    "--pch-storage=memory",
+    "-j=2",
   }
 
   local cc_dir = find_compile_commands_dir(root)
