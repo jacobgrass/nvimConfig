@@ -12,6 +12,21 @@ g.transparency = config.ui.transparency
 opt.laststatus = 3 -- global statusline
 opt.showmode = false
 
+-- WSL2: pin to win32yank to avoid Neovim 0.12's OSC 52 clipboard timing out
+if vim.fn.has "wsl" == 1 then
+  g.clipboard = {
+    name = "win32yank",
+    copy = {
+      ["+"] = "win32yank.exe -i --crlf",
+      ["*"] = "win32yank.exe -i --crlf",
+    },
+    paste = {
+      ["+"] = "win32yank.exe -o --lf",
+      ["*"] = "win32yank.exe -o --lf",
+    },
+    cache_enabled = 0,
+  }
+end
 opt.clipboard = "unnamedplus"
 opt.cursorline = true
 
