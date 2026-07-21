@@ -1,3 +1,30 @@
+local is_windows = vim.fn.has("win32") == 1
+
+-- Windows: nvim-tree creates one fs_event watcher per visible directory and
+-- leaks native memory under heavy file churn (builds, git operations) — RSS
+-- grows ~linearly with every event storm and is never released, eventually
+-- OOMing long sessions. Upstream: nvim-tree/nvim-tree.lua#3292 (open).
+-- Watchers stay enabled on Linux/macOS where inotify/kqueue behave.
+if is_windows then
+  local pending = false
+  vim.api.nvim_create_autocmd({ "BufWritePost", "FocusGained", "TermLeave", "DirChanged" }, {
+    group = vim.api.nvim_create_augroup("NvimTreeManualRefresh", { clear = true }),
+    callback = function()
+      if pending then
+        return
+      end
+      pending = true
+      vim.defer_fn(function()
+        pending = false
+        local ok, api = pcall(require, "nvim-tree.api")
+        if ok and api.tree.is_visible() then
+          api.tree.reload()
+        end
+      end, 500)
+    end,
+  })
+end
+
 local options = {
   filters = {
     dotfiles = false,
@@ -23,7 +50,9 @@ local options = {
     ignore = true,
   },
   filesystem_watchers = {
-    enable = true,
+    enable = not is_windows,
+    -- keep watcher counts down where they remain enabled
+    ignore_dirs = { "node_modules", "\\.cache", "build", "target" },
   },
   actions = {
     open_file = {
