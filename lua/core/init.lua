@@ -26,7 +26,9 @@ if vim.fn.has "wsl" == 1 then
     },
     cache_enabled = 0,
   }
-else
+elseif vim.fn.has "win32" == 0 then
+  -- Native Windows autodetects the win32yank bundled with Neovim; OSC 52
+  -- would hang on paste since Windows terminals don't answer OSC 52 queries
   g.clipboard = {
     name = "OSC 52",
     copy = {
