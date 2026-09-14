@@ -1,8 +1,8 @@
 local vim = vim
 
 -- Disable LSP file logging: $LOCALAPPDATA/nvim-data/lsp.log can grow unbounded
--- and incurs disk I/O on every LSP message. Re-enable to "WARN" if debugging.
-vim.lsp.set_log_level("OFF")
+-- and incurs disk I/O on every LSP message. Re-enable to WARN if debugging.
+vim.lsp.log.set_level(vim.log.levels.OFF)
 
 -- Shut down LSP clients that have no attached buffers. lspconfig keeps clients
 -- alive for the whole session by default; combined with single_file_support
@@ -22,35 +22,43 @@ vim.api.nvim_create_autocmd("BufDelete", {
   end,
 })
 
-local base = require("plugins.configs.lspconfig")
-local on_attach = base.on_attach
-local capabilities = base.capabilities
+-- Base capabilities are applied to every server via vim.lsp.config("*") and the
+-- base on_attach runs from an LspAttach autocmd (see plugins.configs.lspconfig).
+require("plugins.configs.lspconfig")
 
-local util = require("lspconfig.util") -- For root_dir patterns
 local uv = vim.uv or vim.loop
-local ok_lspconfig, lspconfig = pcall(require, "lspconfig")
 local go_format_group = vim.api.nvim_create_augroup("GoLspFormatOnSave", { clear = true })
 local html_format_group = vim.api.nvim_create_augroup("HtmlLspFormatOnSave", { clear = true })
 local ts_js_format_group = vim.api.nvim_create_augroup("TsJsFormatOnSave", { clear = true })
 
-local function setup(server, config)
-  if ok_lspconfig and lspconfig[server] and type(lspconfig[server].setup) == "function" then
-    lspconfig[server].setup(config)
-    return
-  end
+-- Per-server attach hooks. Kept out of `vim.lsp.config(..., { on_attach })` so
+-- nvim-lspconfig's default on_attach for the server (buffer commands such as
+-- LspEslintFixAll / LspTypescriptSourceAction / LspClangdSwitchSourceHeader) is preserved.
+local attach_hooks = {}
 
-  if type(vim.lsp.config) == "function" and type(vim.lsp.enable) == "function" then
+vim.api.nvim_create_autocmd("LspAttach", {
+  group = vim.api.nvim_create_augroup("JgLspServerAttach", { clear = true }),
+  callback = function(args)
+    local client = vim.lsp.get_client_by_id(args.data.client_id)
+    local hook = client and attach_hooks[client.name]
+    if hook then
+      hook(client, args.buf)
+    end
+  end,
+})
+
+local function enable(server, config)
+  if config then
     vim.lsp.config(server, config)
-    vim.lsp.enable(server)
-    return
   end
-
-  vim.notify(("Unable to configure LSP server '%s'"):format(server), vim.log.levels.ERROR)
+  vim.lsp.enable(server)
 end
 
--- Common root directory function for .NET projects
-local csharp_root_dir = function(fname)
-  return util.root_pattern("*.sln", "*.csproj", ".git")(fname)
+-- root_dir callback from a flat marker list (nearest ancestor containing any marker).
+local function root_from_markers(markers)
+  return function(bufnr, on_dir)
+    on_dir(vim.fs.root(bufnr, markers))
+  end
 end
 
 local function file_exists(path)
@@ -162,16 +170,18 @@ local function is_js_ts_filetype(filetype)
 end
 
 local function run_eslint_fix_all(bufnr)
-  if vim.fn.exists(":EslintFixAll") ~= 2 then
-    return
-  end
-
   local clients = vim.lsp.get_clients({ bufnr = bufnr, name = "eslint" })
   if #clients == 0 then
     return
   end
 
-  pcall(vim.cmd, "silent! EslintFixAll")
+  -- nvim-lspconfig registers the buffer-local LspEslintFixAll; older versions used EslintFixAll.
+  for _, cmd in ipairs({ "LspEslintFixAll", "EslintFixAll" }) do
+    if vim.fn.exists(":" .. cmd) == 2 then
+      pcall(vim.cmd, "silent! " .. cmd)
+      return
+    end
+  end
 end
 
 local function format_ts_js_with_prettier(bufnr)
@@ -195,50 +205,14 @@ vim.api.nvim_create_user_command("TsJsFormat", function()
   format_ts_js_with_prettier(bufnr)
 end, { desc = "Format JS/TS with eslint fixes + prettier" })
 
-local function find_compile_commands_dir(root)
-  if not root or root == "" then
-    return nil
-  end
+local clangd_db = require("custom.clangd_db")
 
-  -- Allow manual override per-machine if needed
-  if type(vim.g.clangd_compile_commands_dir) == "string" and vim.g.clangd_compile_commands_dir ~= "" then
-    local overridden = util.path.join(root, vim.g.clangd_compile_commands_dir)
-    if file_exists(util.path.join(overridden, "compile_commands.json")) then
-      return overridden
-    end
-  end
+-- root_dir -> compile_commands.json directory (false when clangd should decide)
+local clangd_db_by_root = {}
+-- root_dir -> argv the running clangd was started with (for :ClangdCompileCommands)
+local clangd_argv_by_root = {}
 
-  if file_exists(util.path.join(root, "compile_commands.json")) then
-    return root
-  end
-
-  -- Common build dirs across Linux + Windows + CMake presets
-  local candidates = {
-    { "build" },
-    { "Build" },
-    { "out", "build" },
-    { "cmake-build-debug" },
-    { "cmake-build-release" },
-    { "build", "Debug" },
-    { "build", "Release" },
-    { "build", "RelWithDebInfo" },
-    { "build", "MinSizeRel" },
-    -- Common CMake presets naming
-    { "build", "x64-Debug" },
-    { "build", "x64-Release" },
-  }
-
-  for _, parts in ipairs(candidates) do
-    local dir = util.path.join(root, unpack(parts))
-    if file_exists(util.path.join(dir, "compile_commands.json")) then
-      return dir
-    end
-  end
-
-  return nil
-end
-
-local function clangd_cmd(root)
+local function clangd_cmd(cc_dir)
   local is_windows = vim.fn.has("win32") ~= 0
   -- Memory-tuned flags for long-running sessions on Windows.
   -- Drop --background-index (kept full project AST in RAM); keep clang-tidy.
@@ -254,7 +228,6 @@ local function clangd_cmd(root)
     "-j=2",
   }
 
-  local cc_dir = find_compile_commands_dir(root)
   if cc_dir then
     table.insert(cmd, "--compile-commands-dir=" .. cc_dir)
   end
@@ -276,82 +249,91 @@ local function clangd_cmd(root)
   return cmd
 end
 
--- clangd (C/C++)
-setup("clangd", {
-  root_dir = function(fname)
-    return util.root_pattern("compile_commands.json", "compile_flags.txt", "CMakeLists.txt", ".git")(fname)
-  end,
-  on_new_config = function(new_config, root_dir)
-    new_config.cmd = clangd_cmd(root_dir)
-  end,
-  on_attach = on_attach,
-  capabilities = capabilities,
-  filetypes = { "c", "cpp", "objc", "objcpp", "cuda" },
-})
+-- Resolve root + database for a buffer and remember the database per root so
+-- the cmd builder (which only sees the root) can pick it up.
+local function clangd_resolve(bufnr)
+  local root, cc_dir = clangd_db.resolve(bufnr)
+  if root then
+    clangd_db_by_root[root] = cc_dir or false
+  end
+  return root, cc_dir
+end
 
--- Add CMAKE setup
-setup("cmake", {
-  on_attach = on_attach,
-  capabilities = capabilities,
+local clangd_filetypes = { "c", "cpp", "objc", "objcpp", "cuda" }
+
+-- clangd (C/C++)
+-- Set `vim.g.clangd_compile_commands_dir` (absolute, or relative to the
+-- workspace root) to pin the database on a machine where auto-detection is
+-- wrong. See `custom.clangd_db` for the search rules.
+vim.lsp.config("clangd", {
+  cmd = function(dispatchers, config)
+    local cc_dir = clangd_db_by_root[config.root_dir] or nil
+    local argv = clangd_cmd(cc_dir)
+    clangd_argv_by_root[config.root_dir] = argv
+    return vim.lsp.rpc.start(argv, dispatchers, { cwd = config.cmd_cwd, env = config.cmd_env })
+  end,
+  root_dir = function(bufnr, on_dir)
+    local root = clangd_resolve(bufnr)
+    if root then
+      on_dir(root)
+    end
+  end,
+  filetypes = clangd_filetypes,
+})
+vim.lsp.enable("clangd")
+
+vim.api.nvim_create_user_command("ClangdCompileCommands", function()
+  local bufnr = vim.api.nvim_get_current_buf()
+  local root, cc_dir = clangd_db.resolve(bufnr)
+  local lines = {
+    "root:              " .. tostring(root),
+    "compile_commands:  " .. (cc_dir and (cc_dir .. "/compile_commands.json") or "<none found; clangd default search>"),
+  }
+  for _, client in ipairs(vim.lsp.get_clients({ bufnr = bufnr, name = "clangd" })) do
+    lines[#lines + 1] = ("running client %d: root=%s"):format(client.id, client.config.root_dir)
+    lines[#lines + 1] = "  cmd: " .. table.concat(clangd_argv_by_root[client.config.root_dir] or { "?" }, " ")
+  end
+  vim.notify(table.concat(lines, "\n"), vim.log.levels.INFO)
+end, { desc = "Show which compile_commands.json clangd uses for this buffer" })
+
+-- CMake
+enable("cmake", {
   init_options = {
     buildDirectory = "build",
   },
 })
 
 -- Python
-setup("pylsp", {
-  on_attach = on_attach,
-  capabilities = capabilities,
-})
+enable("pylsp")
 
--- Lua
-setup("lua_ls", {
-  on_attach = on_attach,
-  capabilities = capabilities,
-})
+-- Lua: configured in plugins.configs.lspconfig
 
 -- JSON
-setup("jsonls", {
-  on_attach = on_attach,
-  capabilities = capabilities,
-})
+enable("jsonls")
 
 -- HTML
-setup("html", {
-  on_attach = function(client, bufnr)
-    on_attach(client, bufnr)
-    client.server_capabilities.documentFormattingProvider = false
+attach_hooks.html = function(client, bufnr)
+  client.server_capabilities.documentFormattingProvider = false
 
-    vim.api.nvim_clear_autocmds { group = html_format_group, buffer = bufnr }
-    vim.api.nvim_create_autocmd("BufWritePre", {
-      group = html_format_group,
-      buffer = bufnr,
-      callback = function()
-        format_html_with_prettier(bufnr)
-      end,
-      desc = "Format HTML files with prettier before save",
-    })
-  end,
-  capabilities = capabilities,
+  vim.api.nvim_clear_autocmds { group = html_format_group, buffer = bufnr }
+  vim.api.nvim_create_autocmd("BufWritePre", {
+    group = html_format_group,
+    buffer = bufnr,
+    callback = function()
+      format_html_with_prettier(bufnr)
+    end,
+    desc = "Format HTML files with prettier before save",
+  })
+end
+enable("html", {
   filetypes = { "html" },
   init_options = {
     provideFormatter = true,
   },
 })
 
+-- TypeScript / JavaScript
 local function setup_typescript_lsp()
-  local server_name = "ts_ls"
-  if ok_lspconfig then
-    if lspconfig.ts_ls and type(lspconfig.ts_ls.setup) == "function" then
-      server_name = "ts_ls"
-    elseif lspconfig.tsserver and type(lspconfig.tsserver.setup) == "function" then
-      server_name = "tsserver"
-    else
-      vim.notify("TypeScript LSP unavailable (missing ts_ls/tsserver config)", vim.log.levels.WARN)
-      return
-    end
-  end
-
   local ts_server_bin = find_executable("typescript-language-server")
   if not ts_server_bin then
     vim.notify(
@@ -361,37 +343,33 @@ local function setup_typescript_lsp()
     return
   end
 
-  setup(server_name, {
-    cmd = { ts_server_bin, "--stdio" },
-    on_attach = function(client, bufnr)
-      on_attach(client, bufnr)
-      client.server_capabilities.documentFormattingProvider = false
-      client.server_capabilities.documentRangeFormattingProvider = false
+  attach_hooks.ts_ls = function(client, bufnr)
+    client.server_capabilities.documentFormattingProvider = false
+    client.server_capabilities.documentRangeFormattingProvider = false
 
-      vim.api.nvim_clear_autocmds { group = ts_js_format_group, buffer = bufnr }
-      vim.api.nvim_create_autocmd("BufWritePre", {
-        group = ts_js_format_group,
-        buffer = bufnr,
-        callback = function()
-          run_eslint_fix_all(bufnr)
-          format_ts_js_with_prettier(bufnr)
-        end,
-        desc = "Format JS/TS files with prettier before save",
-      })
-    end,
-    capabilities = capabilities,
+    vim.api.nvim_clear_autocmds { group = ts_js_format_group, buffer = bufnr }
+    vim.api.nvim_create_autocmd("BufWritePre", {
+      group = ts_js_format_group,
+      buffer = bufnr,
+      callback = function()
+        run_eslint_fix_all(bufnr)
+        format_ts_js_with_prettier(bufnr)
+      end,
+      desc = "Format JS/TS files with prettier before save",
+    })
+  end
+
+  enable("ts_ls", {
+    cmd = { ts_server_bin, "--stdio" },
     filetypes = { "javascript", "javascriptreact", "typescript", "typescriptreact" },
-    root_dir = util.root_pattern("tsconfig.json", "jsconfig.json", "package.json", ".git"),
-    single_file_support = true,
+    root_dir = root_from_markers({ "tsconfig.json", "jsconfig.json", "package.json", ".git" }),
   })
 end
 
 setup_typescript_lsp()
 
 -- YAML
-setup("yamlls", {
-  on_attach = on_attach,
-  capabilities = capabilities,
+enable("yamlls", {
   filetypes = { "yaml" },
   settings = {
     yaml = {
@@ -404,36 +382,30 @@ setup("yamlls", {
 })
 
 -- Bash
-setup("bashls", {
-  on_attach = on_attach,
-  capabilities = capabilities,
-})
+enable("bashls")
 
 -- Go
-setup("gopls", {
-  on_attach = function(client, bufnr)
-    on_attach(client, bufnr)
-
-    vim.api.nvim_clear_autocmds { group = go_format_group, buffer = bufnr }
-    vim.api.nvim_create_autocmd("BufWritePre", {
-      group = go_format_group,
-      buffer = bufnr,
-      callback = function()
-        vim.lsp.buf.format({
-          bufnr = bufnr,
-          async = false,
-          timeout_ms = 3000,
-          filter = function(format_client)
-            return format_client.name == "gopls"
-          end,
-        })
-      end,
-      desc = "Format Go files with gopls before save",
-    })
-  end,
-  capabilities = capabilities,
+attach_hooks.gopls = function(_, bufnr)
+  vim.api.nvim_clear_autocmds { group = go_format_group, buffer = bufnr }
+  vim.api.nvim_create_autocmd("BufWritePre", {
+    group = go_format_group,
+    buffer = bufnr,
+    callback = function()
+      vim.lsp.buf.format({
+        bufnr = bufnr,
+        async = false,
+        timeout_ms = 3000,
+        filter = function(format_client)
+          return format_client.name == "gopls"
+        end,
+      })
+    end,
+    desc = "Format Go files with gopls before save",
+  })
+end
+enable("gopls", {
   filetypes = { "go", "gomod", "gowork", "gotmpl" },
-  root_dir = util.root_pattern("go.work", "go.mod", ".git"),
+  root_dir = root_from_markers({ "go.work", "go.mod", ".git" }),
   settings = {
     gopls = {
       gofumpt = true,
@@ -447,76 +419,61 @@ setup("gopls", {
   },
 })
 
-setup("marksman", {
-  on_attach = on_attach,
-  capabilities = capabilities,
+-- Markdown
+enable("marksman", {
   filetypes = { "markdown" },
 })
 
 -- Fortran
-setup("fortls", {
-  on_attach = on_attach,
-  capabilities = capabilities,
-})
+enable("fortls")
 
-setup("docker_compose_language_service", {
-  on_attach = on_attach,
-  capabilities = capabilities,
+-- Docker
+enable("docker_compose_language_service", {
   filetypes = { "yaml" },
 })
 
-setup("dockerls", {
-  on_attach = on_attach,
-  capabilities = capabilities,
+enable("dockerls", {
   filetypes = { "dockerfile" },
 })
 
 -- 󰄳 C# / OmniSharp
-setup("omnisharp", {
-  on_attach = function(client, bufnr)
-    on_attach(client, bufnr) -- Call your base on_attach
-
-    -- OmniSharp's formatting capabilities will be used by default.
-    -- No need to disable them if you are not using a separate formatter like csharpier.
-
-    -- You can add other C# specific keymaps or settings here if needed.
-    -- Example: OmniSharp specific command for restarting the server
-    -- This is often useful if OmniSharp gets into a weird state.
-    vim.keymap.set("n", "<leader>oR", function()
-      vim.cmd.OmniSharpRestartServer()
-      print("OmniSharp server restarted.")
-    end, { buffer = bufnr, noremap = true, silent = true, desc = "Restart OmniSharp" })
-  end,
-  capabilities = capabilities,
-  -- The cmd might be automatically handled if you use mason-lspconfig.
-  -- If omnisharp is in your PATH, this (or lspconfig's default) should work.
-  -- Ensure 'omnisharp' executable (or omnisharp.sh script) is found.
+attach_hooks.omnisharp = function(_, bufnr)
+  -- OmniSharp's formatting capabilities are used by default.
+  -- Restart is useful when OmniSharp gets into a weird state.
+  vim.keymap.set("n", "<leader>oR", function()
+    require("plugins.configs.lspconfig").restart("omnisharp")
+    print("OmniSharp server restarted.")
+  end, { buffer = bufnr, noremap = true, silent = true, desc = "Restart OmniSharp" })
+end
+enable("omnisharp", {
+  -- Ensure the 'OmniSharp' executable (or omnisharp.sh script) is on PATH.
   cmd = { "OmniSharp", "--languageserver", "--hostPID", tostring(vim.fn.getpid()) },
   filetypes = { "cs", "vb" }, -- C# and VB.NET
-  root_dir = csharp_root_dir,
-  -- Enable modern .NET features. These are often defaults in newer omnisharp-roslyn but explicit can be good.
-  enable_roslyn_analyzers = true,
-  organize_imports_on_format = true,
-  enable_import_completion = true,
-  sdk_include_prereleases = true, -- If you use .NET preview SDKs
-
-  -- If you have an omnisharp.json in your project root, OmniSharp will pick up settings from there.
-  -- For example, to specify a target .NET SDK version or formatting options:
-  -- {
-  --   "FormattingOptions": {
-  --     "EnableEditorConfigSupport": true, // Recommended
-  --     "OrganizeImports": true
-  --   }
-  -- }
+  root_dir = function(bufnr, on_dir)
+    on_dir(vim.fs.root(bufnr, function(name)
+      return name:match("%.sln$") ~= nil or name:match("%.csproj$") ~= nil or name == ".git"
+    end))
+  end,
+  -- Modern .NET features; an omnisharp.json in the project root is also honoured.
+  settings = {
+    FormattingOptions = {
+      OrganizeImports = true,
+    },
+    RoslynExtensionsOptions = {
+      EnableAnalyzersSupport = true,
+      EnableImportCompletion = true,
+    },
+    Sdk = {
+      IncludePrereleases = true, -- If you use .NET preview SDKs
+    },
+  },
 })
 
-setup("eslint", {
-  capabilities = capabilities,
+-- ESLint
+attach_hooks.eslint = function(client)
+  client.server_capabilities.documentFormattingProvider = false
+  client.server_capabilities.documentRangeFormattingProvider = false
+end
+enable("eslint", {
   filetypes = { "javascript", "javascriptreact", "typescriptreact", "typescript" },
-
-  on_attach = function(client, bufnr)
-    on_attach(client, bufnr)
-    client.server_capabilities.documentFormattingProvider = false
-    client.server_capabilities.documentRangeFormattingProvider = false
-  end,
 })

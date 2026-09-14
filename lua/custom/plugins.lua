@@ -112,59 +112,10 @@ local plugins = {
       "neovim/nvim-lspconfig",
     },
     config = function()
-      local base = require("plugins.configs.lspconfig")
-      local ok_lspconfig, lspconfig = pcall(require, "lspconfig")
-
-      local function merged_capabilities(extra)
-        return vim.tbl_deep_extend("force", {}, base.capabilities, extra or {})
-      end
-
-      local function compose_on_attach(user_on_attach)
-        return function(client, bufnr)
-          base.on_attach(client, bufnr)
-          if type(user_on_attach) == "function" then
-            user_on_attach(client, bufnr)
-          end
-        end
-      end
-
-      require("mason-bridge").setup({
-        -- Optional configuration options
-        handlers = {
-          -- Default handlers
-          default = function(config)
-            -- clangd is configured explicitly in `custom.configs.lspconfig`
-            -- Avoid double-setup / conflicting settings.
-            if
-              config.name == "clangd"
-              or config.name == "gopls"
-              or config.name == "html"
-              or config.name == "eslint"
-              or config.name == "ts_ls"
-              or config.name == "tsserver"
-            then
-              return
-            end
-            config.capabilities = merged_capabilities(config.capabilities)
-            config.on_attach = compose_on_attach(config.on_attach)
-            if ok_lspconfig and lspconfig[config.name] and type(lspconfig[config.name].setup) == "function" then
-              lspconfig[config.name].setup(config)
-            else
-              vim.lsp.config(config.name, config)
-              vim.lsp.enable(config.name)
-            end
-          end,
-        },
-        -- Automatically install LSP servers
-        automatic_installation = true,
-        -- Optional: List of LSP servers to configure
-        servers = {
-          -- Example server configurations
-          cmake = {},
-          lua_ls = {},
-          -- Add other servers as needed
-        },
-      })
+      -- mason-bridge only maps filetypes to Mason-installed formatters/linters
+      -- (it has no `handlers`/`servers` options); LSP servers are configured in
+      -- `custom.configs.lspconfig` via vim.lsp.config.
+      require("mason-bridge").setup({})
     end,
   },
   {

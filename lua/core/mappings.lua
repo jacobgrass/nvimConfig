@@ -84,30 +84,15 @@ M.general = {
     ["<leader>ch"] = { "<cmd> NvCheatsheet <CR>", "Mapping cheatsheet" },
 
 
-    ["<leader>lx"] = { ":LspStop<Enter>", "Stop LSP" },
+    ["<leader>lx"] = {
+      function()
+        require("plugins.configs.lspconfig").stop_buffer_clients()
+      end,
+      "Stop LSP (current buffer)",
+    },
     ["<leader>l+"] = {
       function()
-        -- Neovim 0.11+: nvim-lspconfig's :LspStart defaults to vim.lsp.enable()
-        -- and can error when called with no args if configs weren't registered via vim.lsp.config.
-        -- This fallback starts servers configured via lspconfig.*.setup for the current filetype.
-        local ok_util, util = pcall(require, "lspconfig.util")
-        if not ok_util then
-          vim.notify("lspconfig.util not available", vim.log.levels.WARN)
-          return
-        end
-
-        local configs = util.get_config_by_ft(vim.bo.filetype) or {}
-        if #configs == 0 then
-          vim.notify(("No LSP configs for filetype '%s'"):format(vim.bo.filetype), vim.log.levels.INFO)
-          return
-        end
-
-        for _, cfg in ipairs(configs) do
-          pcall(function()
-            cfg.launch()
-          end)
-        end
-        vim.notify("LSP started for current filetype", vim.log.levels.INFO)
+        require("plugins.configs.lspconfig").start_buffer_clients()
       end,
       "Start LSP (current filetype)",
     },
@@ -289,7 +274,7 @@ M.lspconfig = {
 
     ["K"] = {
       function()
-        vim.lsp.buf.hover()
+        vim.lsp.buf.hover(require("plugins.configs.lspconfig").hover_opts)
       end,
       "LSP hover",
     },
@@ -303,7 +288,7 @@ M.lspconfig = {
 
     ["<leader>ls"] = {
       function()
-        vim.lsp.buf.signature_help()
+        vim.lsp.buf.signature_help(require("plugins.configs.lspconfig").signature_opts)
       end,
       "LSP signature help",
     },
