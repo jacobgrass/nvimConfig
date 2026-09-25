@@ -1,41 +1,65 @@
--- nvim-treesitter (main branch) configuration.
--- The legacy module API (highlight/indent/folds options on setup()) was removed
--- on the main branch. Highlight is now engaged per-buffer via FileType autocmd,
--- parser installation goes through the install() function.
+-- nvim-treesitter (master branch) configuration.
+-- master is the branch that supports Neovim 0.11. The main branch requires
+-- Neovim 0.12+ and fails silently here: its installer dies inside an async
+-- task on vim.list.unique (a 0.12 API), so no parser or query ever lands in
+-- install_dir. Buffers then get a highlighter with zero rules -- parsed, but
+-- completely uncolored. Keep this on master until Neovim itself is upgraded.
+local options = {
+  ensure_installed = {
+    -- nvim itself
+    "lua",
+    "luadoc",
+    "vim",
+    "vimdoc",
+    "query",
+    -- c family (clangd, cmake)
+    "c",
+    "cpp",
+    "cuda",
+    "cmake",
+    "make",
+    -- python (pylsp)
+    "python",
+    -- web (ts_ls, html, jsonls)
+    "html",
+    "css",
+    "javascript",
+    "typescript",
+    "tsx",
+    "json",
+    "jsonc",
+    -- go (gopls)
+    "go",
+    "gomod",
+    "gosum",
+    "gowork",
+    "gotmpl",
+    -- shell, config, docs
+    "bash",
+    "yaml",
+    "toml",
+    "markdown",
+    "markdown_inline",
+    "dockerfile",
+    -- fortran (fortls)
+    "fortran",
+    -- misc
+    "diff",
+    "gitcommit",
+    "gitignore",
+    "regex",
+    "printf",
+  },
 
-local M = {}
+  highlight = {
+    enable = true,
+    use_languagetree = true,
+  },
 
--- Parsers to keep installed. install() is idempotent and async.
-M.ensure_installed = { "c", "cpp", "lua", "vim", "vimdoc", "markdown", "markdown_inline" }
+  -- Left off deliberately: treesitter indent would override the built-in
+  -- indenting this config already tunes (see custom/latex_indent.lua and
+  -- custom/fortranformat.lua). Enabling it is a separate decision.
+  indent = { enable = false },
+}
 
-function M.setup()
-  -- preserve nvchad/base46 highlight theme load
-  pcall(dofile, vim.g.base46_cache .. "syntax")
-
-  local ok, ts = pcall(require, "nvim-treesitter")
-  if not ok then
-    return
-  end
-
-  ts.setup({})
-
-  -- Kick off parser install; safe no-op if already present.
-  pcall(ts.install, M.ensure_installed)
-
-  -- Enable treesitter highlight on every buffer whose filetype maps
-  -- to an installed parser. On main branch this is not automatic.
-  vim.api.nvim_create_autocmd("FileType", {
-    group = vim.api.nvim_create_augroup("JgTreesitterStart", { clear = true }),
-    callback = function(args)
-      local ft = vim.bo[args.buf].filetype
-      if not ft or ft == "" then return end
-      local lang = vim.treesitter.language.get_lang(ft)
-      if not lang then return end
-      local ok_add = pcall(vim.treesitter.language.add, lang)
-      if not ok_add then return end
-      pcall(vim.treesitter.start, args.buf, lang)
-    end,
-  })
-end
-
-return M
+return options

@@ -69,11 +69,37 @@ local default_plugins = {
 
   {
     "nvim-treesitter/nvim-treesitter",
-    branch = "main",
-    lazy = false, -- main branch does not support lazy-loading
+    -- Pinned to master: the main branch requires Neovim 0.12+ (see the note in
+    -- plugins/configs/treesitter.lua). Revisit only after upgrading Neovim.
+    branch = "master",
+    init = function()
+      require("core.utils").lazy_load "nvim-treesitter"
+    end,
+    cmd = {
+      "TSInstall",
+      "TSInstallSync",
+      "TSInstallInfo",
+      "TSInstallFromGrammar",
+      "TSUninstall",
+      "TSUpdate",
+      "TSUpdateSync",
+      "TSBufEnable",
+      "TSBufDisable",
+      "TSBufToggle",
+      "TSEnable",
+      "TSDisable",
+      "TSToggle",
+      "TSModuleInfo",
+      "TSEditQuery",
+      "TSEditQueryUserAfter",
+    },
     build = ":TSUpdate",
-    config = function()
-      require("plugins.configs.treesitter").setup()
+    opts = function()
+      return require "plugins.configs.treesitter"
+    end,
+    config = function(_, opts)
+      dofile(vim.g.base46_cache .. "syntax")
+      require("nvim-treesitter.configs").setup(opts)
     end,
   },
 
