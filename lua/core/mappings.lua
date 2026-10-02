@@ -229,6 +229,15 @@ M.tabufline = {
       end,
       "Close buffer",
     },
+
+    -- write + close buffer + hide terminal buffer
+    ["<leader>wx"] = {
+      function()
+        vim.cmd("w")
+        require("nvchad.tabufline").close_buffer()
+      end,
+      "Write and close buffer",
+    },
   },
 }
 M.comment = {
