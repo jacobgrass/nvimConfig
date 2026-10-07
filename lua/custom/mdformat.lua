@@ -1,5 +1,6 @@
 local vim = vim
 local uv = vim.uv or vim.loop
+local prettier_lookup = require("custom.prettier")
 
 local function find_executable(name)
   local path = vim.fn.exepath(name)
@@ -27,7 +28,7 @@ end
 
 local function run_formatter(filepath)
   -- Prettier outputs consistently aligned Markdown tables, so use it first.
-  local prettier = find_executable("prettier")
+  local prettier = prettier_lookup.find_prettier(filepath)
   if prettier then
     return vim.system({
       prettier,
@@ -39,7 +40,7 @@ local function run_formatter(filepath)
       "--prose-wrap",
       "always",
       filepath,
-    }, { text = true }):wait(), "prettier"
+    }, { text = true, cwd = prettier_lookup.cwd_for(filepath) }):wait(), "prettier"
   end
 
   local mdformat = find_executable("mdformat")

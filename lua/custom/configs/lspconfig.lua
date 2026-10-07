@@ -99,14 +99,15 @@ local function find_executable(name)
 end
 
 local function format_with_prettier(bufnr, extra_args)
-  local prettier = find_executable("prettier")
-  if not prettier then
-    vim.notify("prettier not found (PATH or Mason bin)", vim.log.levels.WARN)
+  local filepath = vim.api.nvim_buf_get_name(bufnr)
+  if filepath == "" then
     return false
   end
 
-  local filepath = vim.api.nvim_buf_get_name(bufnr)
-  if filepath == "" then
+  local prettier_lookup = require("custom.prettier")
+  local prettier = prettier_lookup.find_prettier(filepath)
+  if not prettier then
+    vim.notify("prettier not found (project node_modules, PATH or Mason bin)", vim.log.levels.WARN)
     return false
   end
 
@@ -121,7 +122,7 @@ local function format_with_prettier(bufnr, extra_args)
   end
 
   local input = table.concat(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false), "\n")
-  local result = vim.system(cmd, { stdin = input, text = true }):wait()
+  local result = vim.system(cmd, { stdin = input, text = true, cwd = prettier_lookup.cwd_for(filepath) }):wait()
 
   if result.code ~= 0 then
     local stderr = (result.stderr or "unknown error"):gsub("%s+$", "")
