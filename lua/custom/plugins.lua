@@ -123,6 +123,16 @@ local plugins = {
     event = "VeryLazy",
     opts = {},
   },
+  {
+    "MeanderingProgrammer/render-markdown.nvim",
+    version = "^8.14",         -- table wrap landed in 8.14.0; stays on 8.x
+    ft = { "markdown", "markdown.mdx" },
+    dependencies = { "echasnovski/mini.icons" },  -- already installed
+    opts = {
+      file_types = { "markdown", "markdown.mdx" },
+      -- defaults: pipe_table.wrap = true, cell = "padded", style = "full"
+    },
+  },
 }
 
 
