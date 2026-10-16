@@ -128,9 +128,15 @@ local plugins = {
     version = "^8.14",         -- table wrap landed in 8.14.0; stays on 8.x
     ft = { "markdown", "markdown.mdx" },
     dependencies = { "echasnovski/mini.icons" },  -- already installed
+    keys = {
+      { "<leader>rm", "<cmd>RenderMarkdown toggle<cr>", ft = { "markdown", "markdown.mdx" }, desc = "Toggle markdown rendering" },
+    },
     opts = {
       file_types = { "markdown", "markdown.mdx" },
-      -- defaults: pipe_table.wrap = true, cell = "padded", style = "full"
+      render_modes = true,                                     -- render in insert mode too, so the cursor row stays rendered
+      anti_conceal = { enabled = false },                      -- cursor row stays rendered (no raw source under the cursor)
+      win_options = { concealcursor = { rendered = "nvic" } }, -- keep concealing on the cursor row in every mode
+      pipe_table = { enabled = false },                        -- tables are drawn by custom.mdtable (lua/custom/init.lua)
     },
   },
 }
