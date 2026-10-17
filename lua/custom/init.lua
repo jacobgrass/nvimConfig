@@ -8,3 +8,4 @@ vim.api.nvim_create_autocmd("FileType", {
     require("custom.mdtable").attach(ev.buf)
   end,
 })
+pcall(require, "custom.mdtable.celledit") -- floating cell editor: :MdTableCellEdit, <leader>te

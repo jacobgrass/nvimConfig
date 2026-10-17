@@ -125,6 +125,8 @@ function S.check(rows, allow_raw)
   local raw = 0
   local in_raw = false -- after a tolerated raw row: its wrapped screen rows (no box characters)
   for i, s in ipairs(rows) do
+    -- the hint init.lua draws above a row drawn raw is not a grid line
+    if s:find("row too tall to render here", 1, true) then goto continue end
     local first = s:match("^%s*(%S)")
     local marker = is_marker(s)
     local cc = cols_of(s, BARS)
@@ -144,7 +146,9 @@ function S.check(rows, allow_raw)
       in_raw = true
     elseif cur then
       local c = table.concat(cc, ",")
-      if marker and rows[i + 1] and cur.cols ~= "" and table.concat(cols_of(rows[i + 1], BARS), ",") == cur.cols then
+      local nxt = rows[i + 1]
+      if marker and nxt and cur.cols ~= "" and (table.concat(cols_of(nxt, BARS), ",") == cur.cols
+          or (nxt:match("^%s*|") and raw < (allow_raw or 0))) then -- or a tolerated raw row continues the grid
         -- mid-block marker (the sticky header float carries the clip marker
         -- under its delimiter): outer bars only, the grid continues below
         if #cc ~= 2 or outer(cc) ~= cur.outer then

@@ -123,7 +123,7 @@ H.run("draw: a cursor move touches only cursor-row marks, 2 anchors and 2 concea
     vim.wo.conceallevel, vim.wo.concealcursor = 3, "nvic"
     M.attach(buf)
     local win = api.nvim_get_current_win()
-    local seen = 0
+    local seen, was_tall = 0, false
     for _, l in ipairs({ 9, 10, 11, 12, 13, 12, 9, 7 }) do
       api.nvim_win_set_cursor(win, { l + 1, 10 })
       M.render(win)
@@ -132,8 +132,14 @@ H.run("draw: a cursor move touches only cursor-row marks, 2 anchors and 2 concea
       if seen > 1 then
         H.eq(0, c.set, "no new persistent marks on a move")
         H.eq(0, c.deleted_conceal, "no conceal_lines deletes")
-        H.ok(c.updated <= 4, "updated " .. c.updated .. " <= 2 anchors + 2 conceal toggles")
+        -- entering or leaving a row drawn raw (taller than the window) also
+        -- adds or drops the cell-editor hint line above it: one more update
+        local tall = M._last_model(win).tall ~= nil
+        local allow = 4 + ((tall or was_tall) and 1 or 0)
+        H.ok(c.updated <= allow, ("updated %d <= 2 anchors + 2 conceal toggles%s"):format(c.updated,
+          allow > 4 and " + the hint" or ""))
       end
+      was_tall = M._last_model(win).tall ~= nil
     end
     -- a move within the same cell changes nothing at all
     api.nvim_win_set_cursor(win, { 11, 11 }); M.render(win)

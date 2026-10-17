@@ -205,6 +205,19 @@ local function budget(win, view, A, h, m, min_keep)
   return math.min(m, math.max(h - rows - 1, min_keep))
 end
 
+-- The hint line above a row drawn raw (one table per indent: stable block
+-- signatures, draw.lua diffs by them).
+local hints = {}
+local function tall_hint(indent)
+  if not hints[indent] then
+    local ce = package.loaded["custom.mdtable.celledit"]
+    local key = ce and ce.key_label() or "<leader>te"
+    hints[indent] = { { string.rep(" ", indent) .. "row too tall to render here — i or " .. key .. " opens the cell editor",
+      "Comment" } }
+  end
+  return hints[indent]
+end
+
 local function do_render(win, opts)
   local buf = api.nvim_win_get_buf(win)
   local st = state[buf]
@@ -369,6 +382,15 @@ local function do_render(win, opts)
     clipdep = clipdep or clip_a or guess ~= nil
     if anc.inside and row.kind == "body" then
       hctx = { g = g, tbl = tbl, A = anc.anchor, r = r, above = above, clipped = clip_a }
+    end
+    if anc.inside and model.tall and model.tall.lnum == crow and not model.tall.anchor
+        and vim.g.mdtable_cell_editor ~= false and vim.g.mdtable_tall_hint ~= false then
+      -- the raw row: a one-line hint above it (a copy: blocks are memoized;
+      -- vim.g.mdtable_tall_hint = false turns it off). Added after hctx: the
+      -- sticky header's room is the grid lines. Known: a pinned header float
+      -- can cover the hint (header.lua seats the float over all the filler).
+      local hint = tall_hint(tbl.indent)
+      above = vim.list_extend(vim.list_slice(above), { hint })
     end
     if #above > 0 then
       marks[#marks + 1] = { key = "a" .. tbl.start_row, row = anc.anchor, kind = "vl", above = true, lines = above,
@@ -590,6 +612,8 @@ function M.detach(buf)
   buf = (buf == nil or buf == 0) and api.nvim_get_current_buf() or buf
   if not state[buf] then return end
   state[buf] = nil
+  local ce = package.loaded["custom.mdtable.celledit"]
+  if ce then ce.close_buf(buf) end -- an editor open on this buffer
   pcall(api.nvim_del_augroup_by_name, "mdtable_" .. buf)
   if api.nvim_buf_is_valid(buf) then nav.unmap(buf) end
   header.close_buf(buf)
@@ -612,6 +636,8 @@ end
 function M.toggle(on)
   if on == nil then on = not enabled end
   enabled = on
+  local ce = package.loaded["custom.mdtable.celledit"]
+  if not on and ce then ce.close_all() end
   rerender_all()
 end
 
@@ -754,12 +780,14 @@ api.nvim_create_user_command("MdTable", function(o)
     local b = api.nvim_get_current_buf()
     vim.b[b].mdtable_sticky_header = not header.enabled(b)
     if state[b] then render_buf(b, { force = true }) end
+  elseif a == "edit" then
+    require("custom.mdtable.celledit").open_at_cursor()
   elseif a == "stats" then
     if o.fargs[2] == "render" then M.render(0, { force = true }) end
     print(table.concat(vim.list_extend({ M.stats_line() }, M.dims_lines()), "\n"))
   else
-    vim.notify("MdTable: toggle|enable|disable|separators|header|stats", vim.log.levels.ERROR)
+    vim.notify("MdTable: toggle|enable|disable|separators|header|edit|stats", vim.log.levels.ERROR)
   end
-end, { nargs = "*", complete = function() return { "toggle", "enable", "disable", "separators", "header", "stats" } end })
+end, { nargs = "*", complete = function() return { "toggle", "enable", "disable", "separators", "header", "edit", "stats" } end })
 
 return M

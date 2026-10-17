@@ -585,8 +585,27 @@ local LAND = {
   { "N", function() return { kind = "search", pattern = vim.fn.getreg("/"), backward = vim.v.searchforward == 1 } end },
 }
 local LDESC = "mdtable: landing correction"
+local EDESC = "mdtable: cell editor on a row drawn raw"
+
+-- i/a/I/A on a row drawn raw (taller than the window, init.lua) open the
+-- floating cell editor at the cursor's cell instead of inserting in the
+-- line (vim.g.mdtable_cell_editor = false: the builtin keys).
+local function edit_expr(buf, lhs)
+  if vim.g.mdtable_cell_editor == false or not core.attached(buf) then return lhs end
+  local win = api.nvim_get_current_win()
+  local model = core._last_model(win)
+  local lnum = api.nvim_win_get_cursor(win)[1] - 1
+  if not (model and model.tick == api.nvim_buf_get_changedtick(buf) and model.tall and model.tall.lnum == lnum
+      and not model.tall.anchor) then
+    return lhs
+  end
+  return ("<Cmd>lua require('custom.mdtable.celledit').open_at_cursor({ insert = %q, at_cursor = true })<CR>"):format(lhs)
+end
 
 function N.map(buf)
+  for _, lhs in ipairs({ "i", "a", "I", "A" }) do
+    vim.keymap.set("n", lhs, function() return edit_expr(buf, lhs) end, { buffer = buf, expr = true, desc = EDESC })
+  end
   for _, l in ipairs(LAND) do
     vim.keymap.set({ "n", "x" }, l[1], function() -- noremap: the returned key is the builtin
       local it = l[2](vim.v.count)
@@ -614,7 +633,7 @@ end
 function N.unmap(buf)
   for _, m in ipairs({ "n", "x", "i" }) do
     for _, d in ipairs(api.nvim_buf_get_keymap(buf, m)) do
-      if d.desc == DESC or d.desc == LDESC then pcall(vim.keymap.del, m, d.lhs, { buffer = buf }) end
+      if d.desc == DESC or d.desc == LDESC or d.desc == EDESC then pcall(vim.keymap.del, m, d.lhs, { buffer = buf }) end
     end
   end
 end
