@@ -453,7 +453,10 @@ for _, size in ipairs({ { 120, 45, 60 }, { 100, 30, 40 } }) do
     print(("    <C-y> x%d: line %d, %s"):format(tries, t.lua("return vim.fn.line('.')"), desc(ks, mk)))
     H.eq(34, t.lua("return vim.fn.line('.')"), "cursor still on row 30")
     H.ok(#mk == 2 and mk[1].row < find(rows, "topic30") and mk[2].row > find(rows, "topic30"), "markers above and below row 30: " .. desc(ks, mk))
-    H.eq(ks[1], mk[1].n, "top marker counts the rows above (header included)")
+    -- the clip's marker counts the header among the rows above; the sticky
+    -- header float's marker (last float line) counts body rows only
+    local fh = t.lua("local _, f = next(require('custom.mdtable.header')._floats); return f and vim.api.nvim_win_get_height(f.win) or 0")
+    H.eq(mk[1].row == fh and ks[1] - 1 or ks[1], mk[1].n, "top marker counts the rows above (float: header excluded)")
     H.eq(n - ks[#ks], mk[2].n, "bottom marker counts the rows below")
     for i = 1, 6 do -- scroll down: rows below row 30 appear, the bottom marker stays at the bottom
       t.input("<C-e>")

@@ -17,6 +17,10 @@
 -- }, marks, ...). A clipped block keeps the rows nearest the anchor and ends
 -- in a `… N more rows …` marker (project.clip); a block below the anchor
 -- stops at the window bottom so the marker is on screen.
+-- Sticky header (header.lua): while the cursor is in a body row and the
+-- table's header is scrolled off, a float pinned at the window top shows it.
+-- The float and scroll-to-fit follow one viewport plan (plan()), evaluated
+-- the same way on every render path.
 -- Assumes 'wrap' on, 'linebreak', 'showbreak' and 'breakindent' off,
 -- conceallevel=3 and concealcursor=nvic (render-markdown win_options).
 local api, uv = vim.api, vim.uv or vim.loop
@@ -24,6 +28,7 @@ local scan = require("custom.mdtable.scan")
 local layout = require("custom.mdtable.layout")
 local project = require("custom.mdtable.project")
 local draw = require("custom.mdtable.draw")
+local header = require("custom.mdtable.header")
 
 local M = {}
 draw.on_namespace(scan.ignore_ns)
@@ -90,12 +95,13 @@ local function reanchor(win, ws, moved, view)
 end
 
 -- Scroll-to-fit from the model: if the cursor row's grid is clipped at the
--- window bottom, scroll by the minimum (hide filler above topline first, then
--- whole lines). Never when the grid is fully visible.
-local function fit(win, crow, cr, h, view)
-  view = view or api.nvim_win_call(win, vim.fn.winsaveview)
+-- window bottom, the view scrolled by the minimum (hide filler above topline
+-- first, then whole lines), or nil when the grid is fully visible. reserve:
+-- rows at the window top taken by the sticky header float (the grid's top
+-- stays below), from the viewport plan. Pure: plan() applies the view.
+local function fit(win, crow, cr, h, view, reserve)
   local top, tf = view.topline - 1, view.topfill
-  if crow < top then return false end
+  if crow < top then return nil end
   local pre
   if crow == top then
     pre = tf
@@ -105,15 +111,15 @@ local function fit(win, crow, cr, h, view)
   end
   local grid_top = pre - cr.sep_above
   local bottom = grid_top + cr.height
-  local d = math.min(bottom - h, grid_top)
+  local d = math.min(bottom - h, grid_top - (reserve or 0))
   M.last_fit = { top = top, topfill = tf, pre = pre, height = cr.height, h = h, d = d }
-  if d <= 0 then return false end
+  if d <= 0 then return nil end
   local ntop, nfill
   if d <= tf then
     ntop, nfill = top, tf - d
   else
     local need = d - tf
-    if crow == top then return false end
+    if crow == top then return nil end
     local r = th(win, { start_row = top, end_row = crow - 1, start_vcol = 0, max_height = need })
     local e = r.end_row
     if r.all < need then e = crow end
@@ -131,8 +137,52 @@ local function fit(win, crow, cr, h, view)
     end
   end
   M.last_fit.new = { ntop, nfill }
-  api.nvim_win_call(win, function() vim.fn.winrestview({ topline = ntop + 1, topfill = nfill, skipcol = 0 }) end)
-  return true
+  return { topline = ntop + 1, topfill = nfill }
+end
+
+-- Viewport plan: the one rule for the sticky header float and scroll-to-fit,
+-- evaluated the same way on every render path (pre-render of a jump, cursor
+-- move, the early return after a pre-render, scroll re-clip, WinScrolled).
+-- show_header and float_height come from header.rule, independent of the
+-- view: the float shows only when the cursor row's grid fits in the window
+-- below it. With scroll (render paths that may move the view), the target
+-- view is scroll-to-fit with float_height rows reserved (once per row and
+-- cell: ws.fitted), then the float's seat (header.scroll_view). A cursor
+-- line above the view (a jump up; the render undid Neovim's scroll) starts
+-- from the view with that line at the top and its whole above block shown,
+-- so Neovim does not scroll again after the render. Without scroll the
+-- target is the current view. Returns { show_header, float_height,
+-- topline, topfill }.
+local function plan(win, ws, h, view, scroll)
+  local ctx, f = ws.hctx, ws.fit
+  local p = ctx and header.rule(win, api.nvim_win_get_buf(win), ctx, f and f.cr, h)
+    or { show_header = false, float_height = 0 }
+  local v = view
+  if scroll then
+    local A = ws.crow
+    if (ctx or f) and A and A < v.topline - 1 then
+      v = { topline = A + 1, topfill = th(win, { start_row = A, end_row = A }).fill }
+    end
+    if f and ws.fitted ~= f.key then v = fit(win, f.crow, f.cr, h, v, p.float_height) or v end
+    if p.show_header then v = header.scroll_view(win, ctx, h, v) end
+  end
+  p.topline, p.topfill = v.topline, v.topfill
+  return p
+end
+
+-- Apply the plan: move the view to its target (scroll) and show or hide the
+-- float for the resulting view. Returns the view.
+local function settle(win, ws, h, view, scroll)
+  view = view or api.nvim_win_call(win, vim.fn.winsaveview)
+  local p = plan(win, ws, h, view, scroll)
+  if scroll and ws.fit then ws.fitted = ws.fit.key end
+  if p.topline ~= view.topline or p.topfill ~= view.topfill then
+    api.nvim_win_call(win, function() vim.fn.winrestview({ topline = p.topline, topfill = p.topfill, skipcol = 0 }) end)
+    view = api.nvim_win_call(win, vim.fn.winsaveview)
+  end
+  ws.plan = p
+  header.sync(win, ws.hctx, h, view, p)
+  return view
 end
 
 -- Lines the below block of anchor A may take, measured on the marks just
@@ -195,7 +245,12 @@ local function do_render(win, opts)
   local in_range = sc and sc.tick == tick and sc.lo <= math.min(top, crow) and sc.hi >= math.min(math.max(bot, crow + 1), nlines)
   local fsig = in_range and foreign_sig(buf, sc.lo, sc.hi)
   if in_range and fsig ~= sc.fsig then in_range = false; key = key .. ":f" .. fsig end
-  if not opts.force and not reclip and ws.key == key and in_range then return end
+  if not opts.force and not reclip and ws.key == key and in_range then
+    -- same model: a pre-render (nofit) of a jump (G, :N, n) drew it without
+    -- moving the view; apply the viewport plan here as any render does
+    if not opts.nofit then ws.view = settle(win, ws, h, nil, true) end
+    return
+  end
   local t0 = uv.hrtime()
   ws.key = key
   if not in_range then
@@ -228,6 +283,7 @@ local function do_render(win, opts)
   local m = math.max(h - 2, 1) -- the tallest block allowed
   local bfix, clipdep = {}, false
   local bkeep = ws.bkeep or {}
+  local hctx -- sticky header context: the cursor's table, cursor in a body row
   for _, tbl in ipairs(sc.tables) do
     local lay = layout.cached(tbl, lopts)
     local anc = project.anchors(tbl, crow)
@@ -281,6 +337,9 @@ local function do_render(win, opts)
       below = project.clip(g, tbl, full_below, guess, "below")
     end
     clipdep = clipdep or clip_a or guess ~= nil
+    if anc.inside and row.kind == "body" then
+      hctx = { g = g, tbl = tbl, A = anc.anchor, r = r, above = above, clipped = clip_a }
+    end
     if #above > 0 then
       marks[#marks + 1] = { key = "a" .. tbl.start_row, row = anc.anchor, kind = "vl", above = true, lines = above,
         sig = project.block_sig(above) }
@@ -322,17 +381,11 @@ local function do_render(win, opts)
     -- otherwise scroll for the old layout when the cursor moved below it)
     api.nvim_win_call(win, function() vim.fn.winrestview({ topline = view.topline, topfill = view.topfill }) end)
   end
-  local scrolled = false
-  if not opts.nofit then
-    scrolled = reanchor(win, ws, moved, view)
-    local fkey = tick .. ":" .. crow .. ":" .. W .. ":" .. (model.cursor and model.cursor.k or 0)
-    if fitme and ws.fitted ~= fkey then
-      ws.fitted = fkey
-      scrolled = fit(win, crow, fitme, h, not scrolled and view or nil) or scrolled
-    end
-  end
+  ws.hctx = hctx
+  ws.fit = fitme and { crow = crow, cr = fitme, key = tick .. ":" .. crow .. ":" .. W .. ":" .. model.cursor.k } or nil
+  if not opts.nofit and reanchor(win, ws, moved, view) then view = api.nvim_win_call(win, vim.fn.winsaveview) end
   ws.concealed, ws.crow = concealed, crow
-  ws.view = scrolled and api.nvim_win_call(win, vim.fn.winsaveview) or view
+  ws.view = settle(win, ws, h, view, not opts.nofit)
   local ms = (uv.hrtime() - t0) / 1e6
   if reclip then -- not a render of the key: a draw-only update for the new view
     stats.reclips = (stats.reclips or 0) + 1
@@ -382,6 +435,15 @@ function M.model(win)
   local ws = st.wins[win]
   if ws and ws.model and ws.model.tick == api.nvim_buf_get_changedtick(buf) then return ws.model end
   return nil
+end
+
+-- The viewport plan of the last render (tests).
+function M._plan(win)
+  win = (win == nil or win == 0) and api.nvim_get_current_win() or win
+  if not api.nvim_win_is_valid(win) then return nil end
+  local st = state[api.nvim_win_get_buf(win)]
+  local ws = st and st.wins[win]
+  return ws and ws.plan
 end
 
 function M._last_model(win)
@@ -467,6 +529,7 @@ function M.attach(buf)
     group = g, buffer = buf, callback = function() render_buf(buf) end,
   })
   api.nvim_create_autocmd({ "BufWipeout", "BufDelete" }, { group = g, buffer = buf, callback = function() M.detach(buf) end })
+  api.nvim_create_autocmd("BufWinLeave", { group = g, buffer = buf, callback = function() vim.schedule(header.prune) end })
   -- option check once the user is idle: render-markdown sets its window
   -- options after the first render, so checking at attach warns falsely
   api.nvim_create_autocmd("CursorHold", { group = g, buffer = buf, once = true, callback = function()
@@ -483,6 +546,7 @@ function M.detach(buf)
   state[buf] = nil
   pcall(api.nvim_del_augroup_by_name, "mdtable_" .. buf)
   if api.nvim_buf_is_valid(buf) then nav.unmap(buf) end
+  header.close_buf(buf)
   draw.clear(buf)
   scan.detach(buf)
 end
@@ -492,8 +556,9 @@ local function rerender_all()
     st.wins = {}
     if enabled then
       nav.map(buf); render_buf(buf, { force = true })
-    elseif api.nvim_buf_is_valid(buf) then
-      draw.clear(buf); nav.unmap(buf)
+    else
+      header.close_buf(buf)
+      if api.nvim_buf_is_valid(buf) then draw.clear(buf); nav.unmap(buf) end
     end
   end
 end
@@ -551,6 +616,16 @@ api.nvim_create_autocmd("WinScrolled", {
           elseif ws.clipdep then
             M.render(win, { nofit = true, reclip = true })
           end
+          -- sticky header for the new view, from the same viewport plan (no
+          -- scroll: the float hides rather than fight <C-e>; header.sync
+          -- caches by view)
+          if info and enabled and api.nvim_win_is_valid(win) then
+            local t0 = uv.hrtime()
+            settle(win, ws, info.height, ws.view, false)
+            stats.htimes = stats.htimes or {}
+            stats.htimes[#stats.htimes + 1] = (uv.hrtime() - t0) / 1e6
+            if #stats.htimes > 200 then table.remove(stats.htimes, 1) end
+          end
         end
       end
     end
@@ -587,9 +662,16 @@ api.nvim_create_autocmd("WinClosed", {
   group = ag,
   callback = function(ev)
     local win = tonumber(ev.match)
-    if win then draw.forget_win(win) end
+    if win then
+      draw.forget_win(win)
+      if header._floats[win] then
+        local ok = pcall(header.close, win)
+        if not ok then vim.schedule(header.prune) end
+      end
+    end
   end,
 })
+api.nvim_create_autocmd("BufWinEnter", { group = ag, callback = function() header.prune() end })
 
 api.nvim_create_user_command("MdTable", function(o)
   local a = o.fargs[1] or "toggle"
@@ -600,12 +682,16 @@ api.nvim_create_user_command("MdTable", function(o)
     local b = api.nvim_get_current_buf()
     vim.b[b].mdtable_row_separators = not seps_for(b)
     if state[b] then render_buf(b, { force = true }) end
+  elseif a == "header" then
+    local b = api.nvim_get_current_buf()
+    vim.b[b].mdtable_sticky_header = not header.enabled(b)
+    if state[b] then render_buf(b, { force = true }) end
   elseif a == "stats" then
     if o.fargs[2] == "render" then M.render(0, { force = true }) end
     print(M.stats_line())
   else
-    vim.notify("MdTable: toggle|enable|disable|separators|stats", vim.log.levels.ERROR)
+    vim.notify("MdTable: toggle|enable|disable|separators|header|stats", vim.log.levels.ERROR)
   end
-end, { nargs = "*", complete = function() return { "toggle", "enable", "disable", "separators", "stats" } end })
+end, { nargs = "*", complete = function() return { "toggle", "enable", "disable", "separators", "header", "stats" } end })
 
 return M

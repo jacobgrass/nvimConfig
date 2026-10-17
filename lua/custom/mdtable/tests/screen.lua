@@ -139,7 +139,14 @@ function S.check(rows, allow_raw)
       first = nil
     elseif cur then
       local c = table.concat(cc, ",")
-      if marker then -- bottom marker: outer bars only, closes the block
+      if marker and rows[i + 1] and cur.cols ~= "" and table.concat(cols_of(rows[i + 1], BARS), ",") == cur.cols then
+        -- mid-block marker (the sticky header float carries the clip marker
+        -- under its delimiter): outer bars only, the grid continues below
+        if #cc ~= 2 or outer(cc) ~= cur.outer then
+          errs[#errs + 1] = ("row %d: marker bars at %s, block outer bars at %s: %q"):format(i, c, cur.outer, s)
+        end
+        cur.markers = cur.markers + 1
+      elseif marker then -- bottom marker: outer bars only, closes the block
         if #cc ~= 2 or outer(cc) ~= cur.outer then
           errs[#errs + 1] = ("row %d: marker bars at %s, block outer bars at %s: %q"):format(i, c, cur.outer, s)
         end
