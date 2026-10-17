@@ -123,20 +123,25 @@ function S.check(rows, allow_raw)
   local errs, blocks = {}, {}
   local cur
   local raw = 0
+  local in_raw = false -- after a tolerated raw row: its wrapped screen rows (no box characters)
   for i, s in ipairs(rows) do
     local first = s:match("^%s*(%S)")
     local marker = is_marker(s)
     local cc = cols_of(s, BARS)
+    if in_raw and #cc == 0 and not marker then goto continue end
+    local after_raw = in_raw -- a raw line at the window top: the grid under it starts a block
+    in_raw = false
     local starts = s:find("┌", 1, true) or (i == 1 and not cur and (BARS[s:match("^%s*([\226][\128-\191][\128-\191])") or ""]))
-      or (marker and not (cur and cur.cols))
+      or (marker and not (cur and cur.cols)) or (after_raw and not cur and #cc > 0)
     if starts then -- a block starts at its top border or a top marker, or at row 1 when the top is scrolled off
       cur = { top = i, cols = not marker and table.concat(cc, ",") or nil, outer = outer(cc), markers = marker and 1 or 0,
         clipped = i == 1 and not s:find("┌", 1, true) }
       if marker and #cc ~= 2 then errs[#errs + 1] = ("row %d: marker with %d bars: %q"):format(i, #cc, s) end
       blocks[#blocks + 1] = cur
     elseif cur and first == "|" and raw < (allow_raw or 0) then
-      raw = raw + 1 -- a ragged row drawn raw inside the block
+      raw = raw + 1 -- a ragged row (or a row taller than the window) drawn raw inside the block
       first = nil
+      in_raw = true
     elseif cur then
       local c = table.concat(cc, ",")
       if marker and rows[i + 1] and cur.cols ~= "" and table.concat(cols_of(rows[i + 1], BARS), ",") == cur.cols then
@@ -166,8 +171,9 @@ function S.check(rows, allow_raw)
     end
     if first == "|" then
       raw = raw + 1
-      if raw > (allow_raw or 0) then errs[#errs + 1] = ("row %d: raw table row %q"):format(i, s) end
+      if raw > (allow_raw or 0) then errs[#errs + 1] = ("row %d: raw table row %q"):format(i, s) else in_raw = true end
     end
+    ::continue::
   end
   return errs, blocks
 end

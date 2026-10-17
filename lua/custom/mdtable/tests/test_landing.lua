@@ -89,10 +89,48 @@ local ORACLE = [[
   local pat = k:sub(2):gsub("<CR>$", "")
   if k:sub(1, 1) == "/" then return sp(pat, "nw") end
   if k:sub(1, 1) == "?" then return sp(pat, "bnw") end
-  if k:match("^%d*[jk]$") then -- inside a table j/k move within the cell (nav.lua): the line stays
-    local l = vim.fn.line(".") - 1
-    for _, e in ipairs(M._last_model(0).tables) do
-      if l >= e.tbl.start_row and l < e.tbl.end_row then return l + 1 end
+  if k:match("^%d*[jk]$") then
+    -- inside a table (nav.lua, WP-E E1): j/k walk the grid lines of the
+    -- cursor's cell, then the same cell of the next/previous rows, then
+    -- buffer lines past the table
+    local n, dir = tonumber(k:match("^(%d+)")) or 1, k:sub(-1) == "j" and 1 or -1
+    local l, col = vim.fn.line(".") - 1, vim.fn.col(".") - 1
+    local m = M._last_model(0)
+    for _, e in ipairs(m.tables) do
+      local t = e.tbl
+      if l >= t.start_row and l < t.end_row then
+        local x0 = l - t.start_row + 1
+        local row = t.rows[x0]
+        local kk = row.kind ~= "delim" and require("custom.mdtable.project").cell_at(row, col) or 1
+        local function nl(x)
+          local cl, c2 = e.lay.rows[x].cells[math.min(kk, #t.rows[x].cells)], 0
+          for _, ch in ipairs(cl and cl.chunks or {}) do if not ch.fill then c2 = c2 + 1 end end
+          return math.max(c2, 1)
+        end
+        local li, last = 1, nl(x0)
+        if m.cursor and m.cursor.lnum == l then
+          last = math.max(#m.cursor.proj.nav, 1)
+          for i, nv in ipairs(m.cursor.proj.nav) do for _, b in ipairs(nv.b) do if b <= col then li = i end end end
+        end
+        if row.kind == "delim" or (m.tall and m.tall.lnum == l) then li, last = 1, 1 end
+        local room = dir == 1 and last - li or li - 1
+        if n <= room then return l + 1 end
+        local R, ri = {}, nil
+        for x, rw in ipairs(t.rows) do if rw.kind ~= "delim" then R[#R + 1] = x; if x == x0 then ri = #R end end end
+        if row.kind == "delim" then ri = dir == 1 and 1 or 2 end
+        local rest = n - room
+        while true do
+          ri = ri + dir
+          if not R[ri] then
+            local out = dir == 1 and t.end_row or t.start_row - 1
+            if out < 0 or out >= vim.fn.line("$") then return l + 1 end
+            return math.max(0, math.min(vim.fn.line("$") - 1, out + dir * (rest - 1))) + 1
+          end
+          local c = nl(R[ri])
+          if rest <= c then return t.start_row + R[ri] end
+          rest = rest - c
+        end
+      end
     end
   end
   local fwd = vim.v.searchforward == 1
@@ -189,8 +227,12 @@ local function scenario(name, W, Hh, intent, src, steps)
       for i, st0 in ipairs(steps) do
         local st = { k = st0[1], mark = st0.mark, lnum = st0.lnum } -- msgpack: no mixed tables
         local want = c.lua(ORACLE, st)
-        c.lua("vim.v.errmsg = ''")
+        c.lua("vim.v.errmsg = ''; require('custom.mdtable.nav').last_scroll = nil")
         input(c, st)
+        -- <C-d>/<C-u>/<C-f>/<C-b> by the table model (WP-E E3): its target;
+        -- the builtin (no table in range): the oracle's
+        local ls = st.k:match("^<C%-[dufb]>$") and c.lua("return require('custom.mdtable.nav').last_scroll")
+        if ls and ls ~= vim.NIL then want = ls[1] end
         local r = c.lua(CHECK)
         total.steps = total.steps + 1
         mxall = math.max(mxall, r.mx)
@@ -223,6 +265,198 @@ local function scenario(name, W, Hh, intent, src, steps)
     c.stop()
     if not ok then error(err, 0) end
   end)
+end
+
+-- WP-E E1: leaving a table with the navigation keys, crossing rows with
+-- j/k; explicit targets on needs.md plus two lines after the table. After
+-- every step the CHECK asserts (aligned, cursor row real and on screen).
+local E1 = [[
+  local st = ...
+  if st.go then M.goto(0, st.go[1], S.cell_col(st.go[1], st.go[2])) end
+  if st.opt ~= nil then vim.g.mdtable_jk_cross_rows = st.opt end
+]]
+local function e1(name, W, Hh, intent)
+  if ONLY and not name:find(ONLY, 1, true) then return end
+  H.run(name, function()
+    local c = D.start(W, Hh + 1)
+    local ok, err = xpcall(function()
+      c.lua("_G.S = dofile(...); _G.M = require('custom.mdtable'); vim.g.mdtable_intent = select(2, ...)", here .. "/screen.lua", intent)
+      -- text right before the table (120 characters) and a heading right
+      -- after it, so the exits land on text (review WP-E F1, T1)
+      local lines = H.read("needs.md")
+      lines[7] = ("abcdefghij"):rep(12)
+      vim.list_extend(lines, { "## " .. ("0123456789"):rep(11), "", "after the table" })
+      c.lua("_G.BUF, _G.WIN = S.open(...)", lines)
+      c.request("nvim_input", "<Ignore>")
+      -- needs.md (0-based): line 6 before the table, header 7, delimiter 8, body 9..13; 14 and 15 after
+      local function cells(l) return c.lua("local m = M._last_model(0); return #m.cursor.proj.nav") end
+      local bad = {}
+      local function at(label, key, want, setup)
+        if setup then c.lua(E1, setup); c.request("nvim_eval", "1") end
+        if key then c.request("nvim_input", key); c.request("nvim_eval", "1") end
+        local r = c.lua(CHECK)
+        local why = {}
+        if r.line ~= want then why[#why + 1] = ("line %d, want %d"):format(r.line, want) end
+        if r.real and (r.crow ~= r.line - 1 or r.srow <= 0 or not r.onbar) then why[#why + 1] = "cursor row not drawn as the real row" end
+        if not r.intable and r.srow <= 0 then why[#why + 1] = "cursor off screen" end
+        if #r.errs > 0 then why[#why + 1] = "misaligned: " .. r.errs[1] end
+        if #r.merr > 0 then why[#why + 1] = "mdtable error: " .. r.merr[1] end
+        if VERBOSE then print(("  %-34s line %d want %d %s"):format(label, r.line, want, table.concat(why, "; "))) end
+        if #why > 0 then bad[#bad + 1] = label .. ": " .. table.concat(why, "; ") end
+        return r
+      end
+      local r = at("C-j from the last row", "<C-j>", 15, { go = { 13, 2 } })
+      if r.intable then bad[#bad + 1] = "C-j: still in the table" end
+      at("C-k from the header", "<C-k>", 7, { go = { 7, 2 } })
+      at("j from the last row, one-line cell 1", "j", 15, { go = { 13, 1 } })
+      at("<Down> from the last row, cell 1", "<Down>", 15, { go = { 13, 1 } })
+      at("k from the header, cell 1", "k", 7, { go = { 7, 1 } })
+      at("<Up> from the header, cell 1", "<Up>", 7, { go = { 7, 1 } })
+      at("j from the header, cell 1: first body row", "j", 10, { go = { 7, 1 } })
+      at("j again: the next row", "j", 11)
+      at("k: back", "k", 10)
+      -- a multi-line cell: j walks its grid lines first
+      at("row 1 cell 3", nil, 10, { go = { 9, 3 } })
+      local n = cells()
+      if n < 2 then bad[#bad + 1] = "row 1 cell 3 should wrap (" .. n .. " lines)" end
+      for i = 1, n - 1 do at("j in the cell " .. i, "j", 10) end
+      at("j past the cell's last line: next row", "j", 11)
+      at("k: back to row 1's last line", "k", 10)
+      at("3j from row 1 cell 1", "3j", 13, { go = { 9, 1 } })
+      at("9j: past the table, on buffer lines (clamped at the last line)", "9j", 17, { go = { 9, 1 } })
+      -- exits keep the drawn screen column (wincol), clamped to the end of
+      -- the landing screen row when it is shorter
+      local WC = [[return { vim.fn.wincol(), vim.fn.col("."), vim.fn.col("$") - 1, vim.fn.line(".") }]]
+      for _, k in ipairs({ 2, 3, 5 }) do
+        for _, ex in ipairs({ { 13, "<C-j>", 15 }, { 13, "j", 15 }, { 7, "<C-k>", 7 }, { 7, "k", 7 } }) do
+          local label = ("column: %s from %s cell %d"):format(ex[2], ex[1] == 13 and "the last row" or "the header", k)
+          c.lua(E1, { go = { ex[1], k } }); c.request("nvim_eval", "1")
+          local w0 = c.lua(WC)
+          local w1
+          for _ = 1, 60 do -- j/k first walk the cell's grid lines
+            c.request("nvim_input", ex[2]); c.request("nvim_eval", "1")
+            w1 = c.lua(WC)
+            if w1[4] ~= w0[4] then break end
+          end
+          local ok = w1[4] == ex[3] and (w1[1] == w0[1] or (w1[1] < w0[1] and w1[2] == w1[3]))
+          if VERBOSE then print(("  %-34s wincol %d -> %d, line %d"):format(label, w0[1], w1[1], w1[4])) end
+          if not ok then bad[#bad + 1] = ("%s: line %d (want %d), wincol %d -> %d"):format(label, w1[4], ex[3], w0[1], w1[1]) end
+          at(label .. " (checks)", nil, ex[3])
+        end
+      end
+      -- the option restores the clamp
+      at("clamp: j on the last row", "j", 14, { go = { 13, 1 }, opt = false })
+      at("clamp: C-j on the last row", "<C-j>", 14)
+      at("clamp: k on the header", "k", 8, { go = { 7, 1 } })
+      at("clamp: C-k on the header", "<C-k>", 8)
+      c.lua("vim.g.mdtable_jk_cross_rows = nil")
+      at("option back on: j exits", "j", 15, { go = { 13, 1 } })
+      H.eq(0, c.lua("return M.stats.corrected or 0"), "backup landing corrections")
+      if #bad > 0 then error(table.concat(bad, "\n")) end
+    end, debug.traceback)
+    c.stop()
+    if not ok then error(err, 0) end
+  end)
+end
+
+-- WP-E E3: <C-d> from above the first table to the end of the buffer, then
+-- <C-u> back to the top, intent off. Every step lands on the model's target
+-- (no relocation) with the CHECK asserts; inside a table the cursor stays in
+-- cell 1; the cursor enters every table it passes; every body row of those
+-- tables is on screen at some step.
+local VIS = [=[
+  local rows = S.screen()
+  local out = {}
+  for ti, e in ipairs(M._last_model(0).tables) do
+    local g = M.grid(e)
+    for x, rw in ipairs(e.tbl.rows) do
+      if rw.kind == "body" and g.first[x] then
+        local t = {}
+        for _, ch in ipairs(g.lines[g.first[x]]) do t[#t + 1] = ch[1] end
+        local txt = vim.trim(table.concat(t))
+        for _, s in ipairs(rows) do if s:find(txt, 1, true) then out[#out + 1] = e.tbl.start_row .. ":" .. x; break end end
+      end
+    end
+  end
+  local l, cl = vim.fn.line(".") - 1, vim.fn.col(".") - 1
+  local k
+  for _, e in ipairs(M._last_model(0).tables) do
+    if l >= e.tbl.start_row and l < e.tbl.end_row then
+      local rw = e.tbl.rows[l - e.tbl.start_row + 1]
+      if rw.kind ~= "delim" then k = require("custom.mdtable.project").cell_at(rw, cl) end
+    end
+  end
+  local tabs = {}
+  for _, e in ipairs(M._last_model(0).tables) do
+    local b = 0
+    for _, rw in ipairs(e.tbl.rows) do if rw.kind == "body" then b = b + 1 end end
+    tabs[#tabs + 1] = { e.tbl.start_row, e.tbl.end_row, b, #M.grid(e).lines, math.floor(vim.api.nvim_win_get_height(0) / 2) }
+  end
+  return { vis = out, k = k or 0, tabs = tabs, last = vim.fn.line("$"), col = cl }
+]=]
+local function e3(name, W, Hh, src)
+  if ONLY and not name:find(ONLY, 1, true) then return end
+  H.run(name, function()
+    local c = D.start(W, Hh + 1)
+    local ok, err = xpcall(function()
+      c.lua("_G.S = dofile(...); _G.M = require('custom.mdtable'); vim.g.mdtable_intent = false", here .. "/screen.lua")
+      c.lua("_G.BUF, _G.WIN = S.open(...)", src)
+      c.request("nvim_input", "<Ignore>")
+      local bad, seen, entered, tabs = {}, {}, {}, {}
+      for _, dir in ipairs({ "<C-d>", "<C-u>" }) do
+        local prev, prev_pos
+        for i = 1, 80 do
+          c.lua("vim.v.errmsg = ''; require('custom.mdtable.nav').last_scroll = nil")
+          c.request("nvim_input", dir); c.request("nvim_eval", "1")
+          local ls = c.lua("return require('custom.mdtable.nav').last_scroll")
+          if ls == vim.NIL then ls = nil end
+          local r, v = c.lua(CHECK), c.lua(VIS)
+          for _, x in ipairs(v.vis) do seen[x] = true end
+          for _, tb in ipairs(v.tabs) do tabs[tb[1]] = tb end
+          local why = {}
+          if ls and r.line ~= ls[1] then why[#why + 1] = ("relocated: line %d, target %d"):format(r.line, ls[1]) end
+          if r.real and (r.crow ~= r.line - 1 or r.srow <= 0 or not r.onbar) then why[#why + 1] = "cursor row not drawn as the real row" end
+          if r.intable then
+            entered[r.line] = true
+            if r.real and v.k ~= 1 then why[#why + 1] = "cursor left cell 1 (cell " .. v.k .. ")" end
+          end
+          if #r.errs > 0 then why[#why + 1] = "misaligned: " .. r.errs[1] end
+          if #r.merr > 0 then why[#why + 1] = "mdtable error: " .. r.merr[1] end
+          if prev and (dir == "<C-d>" and r.line < prev or dir == "<C-u>" and r.line > prev) then why[#why + 1] = "moved backwards" end
+          if VERBOSE then print(("  %s %2d line %d target %s tbl %s %s"):format(dir, i, r.line, ls and ls[1] or "-", tostring(r.intable), table.concat(why, "; "))) end
+          if #why > 0 then bad[#bad + 1] = ("%s %d: %s"):format(dir, i, table.concat(why, "; ")) end
+          -- a tall row: <C-d> may move within its cell (same line, later grid line)
+          local here = r.line .. ":" .. v.col
+          if here == prev_pos or (dir == "<C-d>" and r.line == v.last) or (dir == "<C-u>" and r.line == 1) then break end
+          prev, prev_pos = r.line, here
+        end
+      end
+      local nt, nrows = 0, 0
+      for s0, tb in pairs(tabs) do
+        nt = nt + 1
+        local inside = false
+        for l in pairs(entered) do if l - 1 >= tb[1] and l - 1 < tb[2] then inside = true end end
+        -- a grid shorter than the move may be passed in one step (its rows are on screen)
+        if not inside and tb[4] > tb[5] then bad[#bad + 1] = "never entered the table at line " .. (s0 + 1) end
+        local b = 0
+        for x = 1, tb[2] - tb[1] do if seen[s0 .. ":" .. x] then b = b + 1 end end
+        nrows = nrows + tb[3]
+        if b < tb[3] then bad[#bad + 1] = ("table at line %d: %d of %d body rows on screen"):format(s0 + 1, b, tb[3]) end
+      end
+      print(("  %s: %d tables, %d body rows, all on screen and entered: %s"):format(name, nt, nrows, tostring(#bad == 0)))
+      if #bad > 0 then error(table.concat(bad, "\n")) end
+    end, debug.traceback)
+    c.stop()
+    if not ok then error(err, 0) end
+  end)
+end
+
+for _, size in ipairs({ { 120, 45 }, { 100, 30 } }) do
+  for _, intent in ipairs({ true, false }) do
+    e1(("E1 exit and cross rows %dx%d intent %s"):format(size[1], size[2], intent and "on" or "off"), size[1], size[2], intent)
+  end
+  e3(("E3 <C-d>/<C-u> needs.md %dx%d intent off"):format(size[1], size[2]), size[1], size[2], H.read("needs.md"))
+  e3(("E3 <C-d>/<C-u> ledger.md %dx%d intent off"):format(size[1], size[2]), size[1], size[2], H.read("ledger.md"))
 end
 
 -- rows of gen(n) for a grid of about f window heights (row height measured)

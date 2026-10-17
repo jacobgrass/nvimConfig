@@ -215,6 +215,9 @@ local function do_render(win, opts)
   if not info then return end
   local W = info.width - info.textoff
   local h = info.height
+  -- what this render used (:MdTable stats)
+  ws.dims = { width = W, height = h, textoff = info.textoff, winwidth = info.width, columns = vim.o.columns,
+    lines = vim.o.lines }
   local cur = opts.cursor or api.nvim_win_get_cursor(win)
   local crow, ccol = cur[1] - 1, cur[2]
   local tick = api.nvim_buf_get_changedtick(buf)
@@ -305,19 +308,46 @@ local function do_render(win, opts)
       else
         local k = project.cell_at(row, ccol)
         local cr = project.cursor_row(tbl, lay, r, k, popts)
-        above, below = cr.above, cr.below
-        cursor = { row = crow, sig = tostring(cr), marks = cr.marks }
-        model.cursor = { tbl = tbl, lay = lay, r = r, k = k, lnum = crow, proj = cr }
-        fitme = cr
-        min_keep, arows = #cr.extra + 1, cr.rows
+        -- once raw, the line stays raw while the cursor stays on it at this
+        -- window size (review WP-E F2: gj/gk walk its screen rows into
+        -- shorter cells without flipping back to a grid mid-walk)
+        local wt = ws.tall
+        local tall = cr.rows > h or (wt ~= nil and wt.lnum == crow and wt.W == W and wt.h == h)
+        if tall then
+          -- the row's line is taller than the window: Neovim would show its
+          -- lower part with w_skipcol (drawn with the overlays of the
+          -- skipped screen rows on top) and "@@@" on the last row. Show the
+          -- line raw instead (a few rows: the cells are not padded), the
+          -- other rows stay virtual. Small windows only (review WP-E, E2).
+          above = project.slice(g, 1, g.first[r] - 1)
+          below = project.slice(g, g.first[r] + g.count[r], #g.lines)
+          arows = math.ceil(math.max(vim.fn.strdisplaywidth(row.line), 1) / W)
+          model.tall = { lnum = crow, rows = cr.rows }
+        else
+          above, below = cr.above, cr.below
+          cursor = { row = crow, sig = tostring(cr), marks = cr.marks }
+          model.cursor = { tbl = tbl, lay = lay, r = r, k = k, lnum = crow, proj = cr }
+          fitme = cr
+          min_keep, arows = #cr.extra + 1, cr.rows
+        end
       end
       entry.cursor = true
     else
       local cov = anc.below and project.covered_tail(tbl, lay, popts) or project.covered_row(tbl, lay, 1, popts)
       above, below, arows = cov.above, cov.below, cov.rows
-      for i, m in ipairs(cov.marks) do
-        marks[#marks + 1] = { key = "h" .. tbl.start_row .. ":" .. i, row = anc.anchor, kind = "raw",
-          col = m[1], o = m[2], sig = tostring(cov) .. i }
+      if cov.rows > h then
+        -- the anchor line drawn as its row is taller than the window (very
+        -- narrow windows): raw, as a tall cursor row (Neovim's "@@@")
+        local x = anc.below and #tbl.rows or 1
+        above = project.slice(g, 1, g.first[x] - 1)
+        below = project.slice(g, g.first[x] + g.count[x], #g.lines)
+        arows = math.ceil(math.max(vim.fn.strdisplaywidth(tbl.rows[x].line), 1) / W)
+        model.tall = model.tall or { lnum = anc.anchor, rows = cov.rows, anchor = true }
+      else
+        for i, m in ipairs(cov.marks) do
+          marks[#marks + 1] = { key = "h" .. tbl.start_row .. ":" .. i, row = anc.anchor, kind = "raw",
+            col = m[1], o = m[2], sig = tostring(cov) .. i }
+        end
       end
     end
     for l = tbl.start_row, tbl.end_row - 1 do
@@ -359,6 +389,7 @@ local function do_render(win, opts)
     end
   end
   ws.anchors = anchors
+  ws.tall = (model.tall and not model.tall.anchor) and { lnum = model.tall.lnum, W = W, h = h } or nil
   local C = draw.apply(buf, win, { marks = marks, cursor = cursor }, tick)
   ws.tick = tick
   ws.model = model
@@ -435,6 +466,21 @@ function M.model(win)
   local ws = st.wins[win]
   if ws and ws.model and ws.model.tick == api.nvim_buf_get_changedtick(buf) then return ws.model end
   return nil
+end
+
+-- The full grid of a table entry of the last model (nav.lua: moves by
+-- rendered screen lines); memoized on the layout.
+function M.grid(entry) return project.grid(entry.tbl, entry.lay) end
+
+-- Re-apply the viewport plan to the current view of win (after nav.lua set
+-- a view of its own): scroll-to-fit runs again, then the float's seat.
+function M.resettle(win)
+  win = (win == nil or win == 0) and api.nvim_get_current_win() or win
+  local st = state[api.nvim_win_get_buf(win)]
+  local ws = st and st.wins[win]
+  if not (ws and ws.dims) then return end
+  ws.fitted = nil
+  ws.view = settle(win, ws, ws.dims.height, nil, true)
 end
 
 -- The viewport plan of the last render (tests).
@@ -586,6 +632,28 @@ function M.stats_line()
       median(stats.rtimes or {}), stats.corrected or 0)
 end
 
+-- Per window: the sizes the last render used, and the current ones when
+-- they differ (a render that missed a resize).
+function M.dims_lines()
+  local out = {}
+  for _, win in ipairs(api.nvim_tabpage_list_wins(0)) do
+    local st = state[api.nvim_win_get_buf(win)]
+    local d = st and st.wins[win] and st.wins[win].dims
+    if d then
+      local info = vim.fn.getwininfo(win)[1]
+      local now = { width = info.width - info.textoff, height = info.height, textoff = info.textoff, winwidth = info.width,
+        columns = vim.o.columns, lines = vim.o.lines }
+      local stale = {}
+      for _, k in ipairs({ "width", "height", "textoff", "winwidth", "columns", "lines" }) do
+        if now[k] ~= d[k] then stale[#stale + 1] = ("%s now %d"):format(k, now[k]) end
+      end
+      out[#out + 1] = ("MdTable win %d: width %d, height %d, textoff %d, winwidth %d, columns %d, lines %d%s"):format(win,
+        d.width, d.height, d.textoff, d.winwidth, d.columns, d.lines, #stale > 0 and (" (STALE: " .. table.concat(stale, ", ") .. ")") or "")
+    end
+  end
+  return out
+end
+
 set_hl()
 local ag = api.nvim_create_augroup("mdtable", { clear = true })
 api.nvim_create_autocmd("ColorScheme", { group = ag, callback = set_hl })
@@ -688,7 +756,7 @@ api.nvim_create_user_command("MdTable", function(o)
     if state[b] then render_buf(b, { force = true }) end
   elseif a == "stats" then
     if o.fargs[2] == "render" then M.render(0, { force = true }) end
-    print(M.stats_line())
+    print(table.concat(vim.list_extend({ M.stats_line() }, M.dims_lines()), "\n"))
   else
     vim.notify("MdTable: toggle|enable|disable|separators|header|stats", vim.log.levels.ERROR)
   end

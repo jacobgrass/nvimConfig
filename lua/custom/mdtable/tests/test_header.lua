@@ -51,7 +51,8 @@ local function child(W, Hh)
     return table.concat(d, "\n")
   end
   function t.aligned(label)
-    local r = c.lua("local rows = S.screen(0); local e, b = S.check(rows, 0); return { e, b, rows }")
+    -- a cursor row taller than the window is drawn raw (init.lua, WP-E E2): one raw row tolerated then
+    local r = c.lua("local rows = S.screen(0); local m = M._last_model(0); local e, b = S.check(rows, (m and m.tall) and 1 or 0); return { e, b, rows }")
     local errs, blocks, rows = r[1], r[2], r[3]
     if #errs > 0 or #blocks == 0 then
       error(label .. ": " .. (#blocks == 0 and "no rendered table" or table.concat(errs, "\n")) .. "\n" .. t.dump(rows), 2)
@@ -82,7 +83,7 @@ local function child(W, Hh)
     if marker then -- body rows below the marker against the float's top border
       local rest = {}
       for i, r in ipairs(rows) do if i ~= n then rest[#rest + 1] = r end end
-      local e = t.lua("return (S.check(...))", rest, 0)
+      local e = t.lua("local m = M._last_model(0); return (S.check(..., (m and m.tall) and 1 or 0))", rest)
       if #e > 0 then error(label .. ": below the marker: " .. table.concat(e, "\n") .. "\n" .. t.dump(rows), 2) end
     end
     for i = 1, n do H.eq(f.text[i], rows[i]:sub(1, #f.text[i]), label .. ": screen row " .. i .. " is the float's line") end
@@ -524,6 +525,128 @@ for _, sz in ipairs({ { 100, 30 }, { 100, 42 }, { 120, 45 } }) do
     end)
   end
 end
+end
+
+-- WP-E E2: sizes. The renderer uses the window's current size after every
+-- terminal resize (no cursor move) and after `j`; the float follows the
+-- window width; a cursor row taller than the window is drawn raw, so
+-- Neovim never scrolls inside it (w_skipcol: the overlays of the skipped
+-- screen rows were drawn on top) and no "@@@"/"<<<" covers a bar.
+local SIZE = [[
+  local out = { stale = {}, wins = {} }
+  for _, l in ipairs(M.dims_lines()) do if l:find("STALE", 1, true) then out.stale[#out.stale + 1] = l end end
+  for _, w in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+    if vim.api.nvim_win_get_config(w).relative == "" then
+      local rows = S.screen(w)
+      local m = M._last_model(w)
+      local e = S.check(rows, (m and m.tall) and 1 or 0)
+      local at = 0
+      for _, r in ipairs(rows) do if r:find("@@@", 1, true) or r:find("<<<", 1, true) then at = at + 1 end end
+      local skip = vim.api.nvim_win_call(w, function() return vim.fn.winsaveview().skipcol end)
+      local l = vim.api.nvim_win_get_cursor(w)[1] - 1
+      local intable = false
+      for _, en in ipairs(m and m.tables or {}) do if l >= en.tbl.start_row and l < en.tbl.end_row then intable = true end end
+      out.wins[#out.wins + 1] = { win = w, errs = e, at = at, skip = skip, rows = rows, tall = m and m.tall ~= nil, intable = intable }
+    end
+  end
+  return out
+]]
+local function sizes_ok(t, label)
+  local r = t.lua(SIZE)
+  if #r.stale > 0 then error(label .. ": render used an old size: " .. table.concat(r.stale, " | "), 2) end
+  for _, w in ipairs(r.wins) do
+    local why = {}
+    if #w.errs > 0 then why[#why + 1] = w.errs[1] end
+    -- cursor above/below a table whose anchor block overflows the window
+    -- bottom: Neovim's "@@@" also on the committed code (WP-E report, p5-head.log)
+    if w.at > 0 and w.intable then why[#why + 1] = w.at .. " row(s) with @@@/<<<" end
+    if w.at > 0 and not w.intable then print(("KNOWN %s win %d: @@@ with the cursor outside the table"):format(label, w.win)) end
+    if w.skip > 0 then why[#why + 1] = "skipcol " .. w.skip end
+    if #why > 0 then error(("%s win %d: %s\n"):format(label, w.win, table.concat(why, "; ")) .. t.dump(w.rows), 2) end
+  end
+  for _, f in ipairs(t.floats()) do
+    H.eq(f.pwidth, f.width, label .. ": float width = window width")
+    H.eq(0, f.col, label .. ": float col")
+  end
+  if #t.floats() == 1 and #r.wins == 1 then t.pinned(label) end
+  return r
+end
+local MATRIX = { { 97, 31 }, { 143, 38 }, { 100, 20 }, { 80, 50 }, { 120, 45 } }
+for _, src in ipairs({ "needs", "needs+tall" }) do
+  for _, at in ipairs({ "G", "row 3 cell 2" }) do
+    case(("C11 %s %s: resize 120x45 -> 97x31, 143x38, 100x20, 80x50, 120x45; after each, no key, then j"):format(src, at), 120, 45, function(t)
+      t.open(src == "needs" and "needs.md" or needs_tall())
+      if at == "G" then t.input("G") else t.cur(FIRST + 2, t.col(FIRST + 2, 2)) end
+      sizes_ok(t, "120x45 start")
+      for _, sz in ipairs(MATRIX) do
+        local tag = sz[1] .. "x" .. sz[2]
+        t.c.request("nvim_ui_try_resize", sz[1], sz[2] + 1); t.input("<Ignore>")
+        H.eq(sz[2], t.lua("return vim.api.nvim_win_get_height(0)"), tag .. ": window height")
+        local r = sizes_ok(t, tag)
+        t.input("j"); sizes_ok(t, tag .. " j"); t.input("k")
+        if r.wins[1].tall then print(("INFO C11 %s %s %s: cursor row drawn raw (taller than the window)"):format(src, at, tag)) end
+      end
+      t.no_errors("C11")
+    end)
+  end
+end
+for _, sz in ipairs({ { 143, 38 }, { 120, 45 } }) do
+  case(("C11 vsplit at %dx%d, then 97x31 and back"):format(sz[1], sz[2]), sz[1], sz[2], function(t)
+    t.open("needs.md")
+    t.input("<Cmd>vsplit<CR>"); t.cur(FIRST + 2, t.col(FIRST + 2, 2))
+    sizes_ok(t, "vsplit")
+    for _, s2 in ipairs({ { 97, 31 }, sz }) do
+      t.c.request("nvim_ui_try_resize", s2[1], s2[2] + 1); t.input("<Ignore>")
+      sizes_ok(t, s2[1] .. "x" .. s2[2]); t.input("j"); sizes_ok(t, s2[1] .. "x" .. s2[2] .. " j")
+    end
+    t.no_errors("C11 vsplit")
+  end)
+end
+for _, sz in ipairs({ { 100, 20 }, { 97, 31 } }) do
+  case(("C11 tall row %dx%d: j/k through the 731-character cell, no skipcol, no @@@"):format(sz[1], sz[2]), sz[1], sz[2], function(t)
+    local lines = needs_tall()
+    vim.list_extend(lines, { "", "after" })
+    t.open(lines)
+    t.cur(LAST + 1, t.col(LAST + 1, 3))
+    H.ok(t.lua("return M._last_model(0).tall ~= nil"), "the row is taller than the window: drawn raw")
+    -- review WP-E F2: j/k walk the raw row's screen rows first, then leave it
+    local TL = LAST + 2 -- 1-based line of the tall row
+    local function rows_left(dir)
+      return t.lua([[local d = ...; local vc = vim.fn.virtcol('.') - 1; local l = vim.fn.line('.') - 1
+        local o = d == 1 and { start_row = l, end_row = l, start_vcol = vc } or { start_row = l, end_row = l, start_vcol = 0, end_vcol = vc + 1 }
+        return vim.api.nvim_win_text_height(0, o).all - 1]], dir)
+    end
+    local function line() return t.lua("return vim.fn.line('.')") end
+    local down = rows_left(1)
+    H.ok(down >= 3, "the raw row has screen rows below the cursor: " .. down)
+    for i = 1, down do
+      local vc0 = t.lua("return vim.fn.virtcol('.')")
+      t.input("j")
+      H.eq(TL, line(), "j " .. i .. " stays on the raw row")
+      H.ok(t.lua("return vim.fn.virtcol('.')") > vc0, "j " .. i .. " moved down a screen row")
+      H.ok(t.lua("return M._last_model(0).tall ~= nil"), "j " .. i .. ": the row stays raw")
+      sizes_ok(t, "j " .. i)
+    end
+    t.input("j")
+    H.eq(TL + 1, line(), "j on the raw row's last screen row leaves the table")
+    t.cur(LAST + 1, t.col(LAST + 1, 3))
+    for _ = 1, down do t.input("j") end
+    H.eq(TL, line(), "back on the raw row's last screen row")
+    local up = rows_left(-1)
+    H.ok(up >= 3, "screen rows above: " .. up)
+    for i = 1, up do
+      local vc0 = t.lua("return vim.fn.virtcol('.')")
+      t.input("k")
+      H.eq(TL, line(), "k " .. i .. " stays on the raw row")
+      H.ok(t.lua("return vim.fn.virtcol('.')") < vc0, "k " .. i .. " moved up a screen row")
+      sizes_ok(t, "k " .. i)
+    end
+    t.input("k")
+    H.eq(TL - 1, line(), "k on the raw row's first screen row: the row above")
+    sizes_ok(t, "k across")
+    print(("INFO C11 tall %dx%d: %d screen rows walked down, %d up"):format(sz[1], sz[2], down, up))
+    t.no_errors("C11 tall")
+  end)
 end
 
 H.done()

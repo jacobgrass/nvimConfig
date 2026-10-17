@@ -145,12 +145,15 @@ H.run("draw: a cursor move touches only cursor-row marks, 2 anchors and 2 concea
 end)
 
 H.run("draw: a text edit of the cursor row changes only that row's entries (and its anchors)", function()
-  H.with_buffer(H.read("needs.md"), function(buf)
+  -- the cursor row must fit the window (80x22 here), else it is drawn raw
+  -- (WP-E E2): ledger.md's first body row, not needs.md's 28-row row 3
+  H.with_buffer(H.read("ledger.md"), function(buf)
     vim.wo.conceallevel, vim.wo.concealcursor = 3, "nvic"
     M.attach(buf)
     local win = api.nvim_get_current_win()
-    api.nvim_win_set_cursor(win, { 11, 12 }); M.render(win)
-    api.nvim_buf_set_text(buf, 10, 12, 10, 12, { "x" })
+    api.nvim_win_set_cursor(win, { 8, 3 }); M.render(win)
+    H.ok(M._last_model(win).tall == nil and M._last_model(win).cursor ~= nil, "cursor row drawn as a grid (fits the window)")
+    api.nvim_buf_set_text(buf, 7, 3, 7, 3, { "x" })
     M.render(win)
     local c = M.stats.marks
     H.eq(0, c.set, "no new persistent marks")

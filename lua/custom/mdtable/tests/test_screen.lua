@@ -424,11 +424,13 @@ for _, size in ipairs({ { 120, 45, 60 }, { 100, 30, 40 } }) do
     end
     H.ok(ks[#ks] > prev_max and mk[1].n < prev_n, ("<C-e> revealed rows: max %d -> %d, marker %d -> %d"):format(prev_max, ks[#ks], prev_n, mk[1].n))
     prev_max = ks[#ks]
-    -- <C-d> moves the cursor by screen lines and concealed table lines have
-    -- none, so from the header it lands after the table (the motion's own
-    -- target, see test_landing.lua): the rows at the table's end show
-    local want = t.lua("local v = vim.fn.winsaveview(); vim.cmd('normal! ' .. vim.keycode('<C-d>')); local l = vim.fn.line('.'); vim.fn.winrestview(v); return l")
+    -- <C-d> moves by rendered screen lines (nav.lua N.scroll, WP-E E3): from
+    -- the header half a window down the grid, the view scrolled as much
+    t.lua("require('custom.mdtable.nav').last_scroll = nil")
     t.input("<C-d>")
+    local ls = t.lua("return require('custom.mdtable.nav').last_scroll")
+    H.ok(ls, "<C-d> moved by the table model")
+    local want = ls[1]
     rows = t.aligned("<C-d>")
     ks, mk = seen(rows)
     print(("    <C-d>: line %d (motion target %d), %s"):format(t.lua("return vim.fn.line('.')"), want, desc(ks, mk)))
