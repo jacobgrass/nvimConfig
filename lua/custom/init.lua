@@ -8,4 +8,7 @@ vim.api.nvim_create_autocmd("FileType", {
     require("custom.mdtable").attach(ev.buf)
   end,
 })
-pcall(require, "custom.mdtable.celledit") -- floating cell editor: :MdTableCellEdit, <leader>te
+pcall(require, "custom.mdtable.celledit") -- floating cell editor: :MdTableCellEdit
+-- <leader>te: the mdtable section of lua/core/mappings.lua (plugin = true, so
+-- it is loaded here and listed by :NvCheatsheet)
+require("core.utils").load_mappings("mdtable")

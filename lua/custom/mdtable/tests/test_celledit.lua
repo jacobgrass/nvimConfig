@@ -16,7 +16,18 @@ local ROW12 = 12 -- body row 4
 local SIZES = { { 100, 20 }, { 100, 30 }, { 120, 45 } }
 
 local PRE = [[
-_G.S = dofile(...)
+local spath = ...
+_G.S = dofile(spath)
+-- <leader>te as Jacob's config defines it: the mdtable section of
+-- lua/core/mappings.lua (the one definition; celledit maps nothing)
+do
+  local maps = dofile(vim.fn.fnamemodify(spath, ":h:h:h:h:h") .. "/lua/core/mappings.lua")
+  local m = maps.mdtable.n["<leader>te"]
+  vim.keymap.set("n", "<leader>te", m[1], { desc = m[2] })
+end
+_G.NOTES = {}
+local notify = vim.notify
+vim.notify = function(msg, lvl, o) NOTES[#NOTES + 1] = msg; return notify(msg, lvl, o) end
 _G.M = require('custom.mdtable')
 _G.CE = require('custom.mdtable.celledit')
 local api = vim.api
@@ -232,7 +243,7 @@ for _, sz in ipairs(SIZES) do
   end)
 end
 
-H.run("C1b <leader>te opens at the cursor's offset; :MdTableCellEdit; outside a table the key falls through", function()
+H.run("C1b <leader>te opens at the cursor's offset; :MdTableCellEdit; outside a table the key notifies", function()
   local t = child(100, 30)
   local ok, err = xpcall(function()
     t.open("needs.md")
@@ -249,8 +260,11 @@ H.run("C1b <leader>te opens at the cursor's offset; :MdTableCellEdit; outside a 
     t.input("q")
     H.ok(not t.fl(), "closed")
     t.cur(0, 0)
+    t.lua("NOTES = {}")
     t.input("\\te")
     H.ok(not t.fl(), "no float outside a table")
+    local notes = t.lua("return NOTES")
+    H.ok(#notes == 1 and notes[1]:find("not in a table", 1, true), "outside a table: one notice 'not in a table': " .. vim.inspect(notes))
     t.cur(8, 2)
     t.input("\\te")
     H.ok(not t.fl(), "no float on the delimiter row")

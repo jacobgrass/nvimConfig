@@ -311,6 +311,74 @@ case("C4 needs 120x45: typing in the far-right cell with the float shown: relayo
   t.no_errors("C4")
 end)
 
+-- WP-G: a cursor row whose cell spills rows above carries its separator on
+-- the line's first screen row; seated under the float, that separator goes
+-- under the float's delimiter like a separator drawn as filler, so the
+-- delimiter is never followed by a second border line.
+-- needs-live.md: header 7, delimiter 8, body 9..12; line 11 (151) cells 4..7
+-- spill 6..8 rows at 140 columns.
+for _, mode in ipairs({ "row", "flow" }) do
+  case("CG needs-live 140x50 spill=" .. mode .. ": Ctrl-l into spilling cells under the float: one border under the float, no double separator", 140, 50, function(t)
+    t.open("needs-live.md", ("vim.g.mdtable_spill = %q"):format(mode))
+    t.cur(11, t.col(11, 1))
+    local shown = 0
+    for k = 2, 7 do
+      t.input("<C-l>")
+      t.input("<Ignore>")
+      local rows = t.screen()
+      local m = t.lua("local m = M._last_model(0); return m and m.cursor and { k = m.cursor.k, lil = m.cursor.proj.lines_in_line, spill = m.cursor.proj.spill_above, blank = m.cursor.proj.blank_above + m.cursor.proj.blank_below } or vim.NIL")
+      H.ok(m ~= vim.NIL and m.k == k, "cursor in cell " .. k)
+      if mode == "flow" then H.eq(0, m.blank, "flow: cell " .. k .. " shows no blank row") end
+      t.aligned("cell " .. k)
+      if #t.floats() > 0 then
+        shown = shown + 1
+        local d
+        for i, s in ipairs(rows) do if s:find("├", 1, true) then d = i; break end end
+        H.ok(d and not (rows[d + 1] or ""):find("├", 1, true), ("cell %d (spill %d, lines in line %d): the float's delimiter is followed by a border line\n%s")
+          :format(k, m.spill, m.lil, t.dump(rows)))
+      end
+    end
+    if mode == "row" then H.ok(shown > 0, "the float is shown on the spilling cells") end
+    t.no_errors("CG")
+  end)
+end
+
+-- WP-G review round: "flow" draws lines of the block below on the cursor
+-- line's spill rows; the row's height for scroll-to-fit must count them, or
+-- a line exactly as tall as the window is fitted one row short and Neovim
+-- moves the cursor to the next table row (needs.md row 12, cell 2 -> 3).
+-- (Jacob's gutter: number column 5 wide; the window heights around 43)
+for _, mode in ipairs({ "flow", "row", "cell" }) do
+ for _, Hh in ipairs({ 43, 44, 45, 46 }) do
+  case(("CH needs 120x%d spill=%s: Ctrl-l and Ctrl-h across row 12 stay on row 12, at each cell's start"):format(Hh, mode), 120, Hh, function(t)
+    t.open("needs.md", ("vim.g.mdtable_spill = %q; vim.wo.number = true; vim.wo.numberwidth = 5"):format(mode))
+    t.cur(12, t.col(12, 1))
+    local seen, want_k = {}, nil
+    for _, key in ipairs({ "<C-l>", "<C-l>", "<C-l>", "<C-l>", "<C-l>", "<C-l>", "<C-h>", "<C-h>", "<C-h>", "<C-h>", "<C-h>", "<C-h>" }) do
+      t.input(key)
+      t.input("<Ignore>")
+      local c = t.lua([[local c = vim.api.nvim_win_get_cursor(0); local m = M._last_model(0)
+        local cell = m and m.cursor and m.cursor.tbl.rows[m.cursor.r].cells[m.cursor.k]
+        return { c[1] - 1, c[2], m and m.cursor and m.cursor.k or 0, m and m.cursor and m.cursor.proj.rows or -1,
+          cell and cell.s or -1, cell and cell.e or -1 }]])
+      want_k = (want_k or 1) + (key == "<C-l>" and 1 or -1)
+      H.eq(12, c[1], mode .. " " .. key .. ": cursor line")
+      H.eq(want_k, c[3], mode .. " " .. key .. ": cell")
+      if c[6] > c[5] then H.eq(c[5], c[2], mode .. " " .. key .. ": at the start of cell " .. c[3]) end
+      if seen[c[3]] then H.eq(seen[c[3]], c[4], mode .. ": cell " .. c[3] .. " height the same both ways") end
+      seen[c[3]] = c[4]
+      -- alignment with the number column blanked (as tmux_check.lua does)
+      local a = t.lua([[local rows = S.screen(0)
+        for i, x in ipairs(rows) do rows[i] = string.rep(" ", 5) .. vim.fn.strcharpart(x, 5) end
+        local m = M._last_model(0); local e, b = S.check(rows, (m and m.tall) and 1 or 0); return { e, #b }]])
+      H.eq({}, a[1], mode .. " cell " .. c[3] .. ": aligned")
+      H.ok(a[2] > 0, mode .. " cell " .. c[3] .. ": a rendered table")
+    end
+    t.no_errors("CH")
+  end)
+ end
+end
+
 case("C5 short fully visible table: no float on any row or scroll", 80, 30, function(t)
   t.open({ "# T", "", "| a | b |", "|---|---|", "| 1 | one |", "| 2 | two |", "| 3 | three |", "", "after" })
   for l = 2, 6 do

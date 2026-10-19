@@ -109,8 +109,8 @@ local function fit(win, crow, cr, h, view, reserve)
     pre = tf + th(win, { start_row = top, end_row = crow - 1, start_vcol = 0 }).all
       + th(win, { start_row = crow, end_row = crow }).fill
   end
-  local grid_top = pre - cr.sep_above
-  local bottom = grid_top + cr.height
+  local grid_top = pre - cr.sep_above + (cr.lines_in_line or 0)
+  local bottom = pre - cr.sep_above + cr.height
   local d = math.min(bottom - h, grid_top - (reserve or 0))
   M.last_fit = { top = top, topfill = tf, pre = pre, height = cr.height, h = h, d = d }
   if d <= 0 then return nil end
@@ -291,7 +291,11 @@ local function do_render(win, opts)
   end
   local concealed = {}
   local lopts = { width = W, separators = seps }
-  local popts = { width = W, separators = seps, tabstop = vim.bo[buf].tabstop }
+  -- vim.g.mdtable_spill: "flow" (default), "row" or "cell", what the spill
+  -- rows of a cursor row carry (project.lua header)
+  local sp = vim.g.mdtable_spill
+  local popts = { width = W, separators = seps, tabstop = vim.bo[buf].tabstop,
+    spill = (sp == "row" or sp == "cell") and sp or "flow" }
   local marks, cursor = {}, nil
   local model = { tick = tick, tables = {}, cursor = nil }
   local anchors, moved = {}, nil
@@ -381,7 +385,8 @@ local function do_render(win, opts)
     end
     clipdep = clipdep or clip_a or guess ~= nil
     if anc.inside and row.kind == "body" then
-      hctx = { g = g, tbl = tbl, A = anc.anchor, r = r, above = above, clipped = clip_a }
+      hctx = { g = g, tbl = tbl, A = anc.anchor, r = r, above = above, clipped = clip_a,
+        lil = model.cursor and model.cursor.tbl == tbl and model.cursor.proj.lines_in_line or 0 }
     end
     if anc.inside and model.tall and model.tall.lnum == crow and not model.tall.anchor
         and vim.g.mdtable_cell_editor ~= false and vim.g.mdtable_tall_hint ~= false then

@@ -40,8 +40,9 @@
 -- applies and closes; normal <Esc> closes, applying when the text changed;
 -- normal q closes, discarding a change ("cell edit discarded");
 -- <C-h>/<C-j>/<C-k>/<C-l> (normal and insert) apply and move.
--- From a table: :MdTableCellEdit (:MdTable edit), <leader>te in markdown
--- buffers (falls through outside a table), and i/a/I/A on a row drawn raw
+-- From a table: :MdTableCellEdit (:MdTable edit), <leader>te (the mdtable
+-- section of lua/core/mappings.lua, calling open_at_cursor: a notice outside
+-- a table), and i/a/I/A on a row drawn raw
 -- (nav.lua; vim.g.mdtable_cell_editor = false turns that off).
 local api = vim.api
 local scan = require("custom.mdtable.scan")
@@ -50,7 +51,6 @@ local project = require("custom.mdtable.project")
 local C = {}
 C.KEY = "<leader>te"
 C.WRAP = 60 -- the float's width: the cell text wrapped at this many columns
-local DESC = "mdtable: edit the table cell in a float"
 
 local S -- the open editor: { win, buf, pwin, pbuf, lnum, k, orig, group }
 local seq = 0
@@ -318,7 +318,7 @@ function C.open_at_cursor(opts)
   local win = api.nvim_get_current_win()
   local lnum, k, off = C.cell_under_cursor(win)
   if not lnum then
-    vim.notify("mdtable cell editor: the cursor is not on a table cell", vim.log.levels.WARN)
+    vim.notify("mdtable cell editor: not in a table (the cursor is not on a table cell)", vim.log.levels.WARN)
     return false
   end
   -- the float's cursor at the start of the text (opts.at_cursor: at the
@@ -437,23 +437,8 @@ end
 
 -- Opening from a table ----------------------------------------------------
 
-local function map_buf(buf)
-  if not api.nvim_buf_is_valid(buf) or vim.b[buf].mdtable_celledit then return end
-  vim.keymap.set("n", C.KEY, function()
-    local ok, lnum = pcall(C.cell_under_cursor, 0)
-    if ok and lnum then return "<Cmd>lua require('custom.mdtable.celledit').open_at_cursor()<CR>" end
-    return api.nvim_replace_termcodes(C.KEY, true, false, true) -- not on a cell: the builtin keys
-  end, { buffer = buf, expr = true, desc = DESC })
-end
-C._map_buf = map_buf
-
 local ag = api.nvim_create_augroup("mdtable_celledit", { clear = true })
-api.nvim_create_autocmd("FileType", { group = ag, pattern = { "markdown", "markdown.mdx" },
-  callback = function(ev) map_buf(ev.buf) end })
 api.nvim_create_autocmd("VimLeavePre", { group = ag, callback = function() C.close_all() end })
-for _, b in ipairs(api.nvim_list_bufs()) do
-  if api.nvim_buf_is_loaded(b) and vim.bo[b].filetype:match("^markdown") then map_buf(b) end
-end
 
 api.nvim_create_user_command("MdTableCellEdit", function() C.open_at_cursor() end,
   { desc = "Edit the Markdown table cell under the cursor in a float" })

@@ -18,9 +18,17 @@
 --   the spacer; a second overlay paints the grid right of the text. Soft-wrap
 --   breaks at RAW width (concealed bytes count), so inline padding puts each
 --   break exactly at the window edge: one grid line = one screen line.
---   Concealed bytes that do not fit add spill rows, drawn as blank bordered
---   rows (above the grid when the prefix before the cell is too wide, below
---   it otherwise).
+--   Concealed bytes that do not fit add spill rows (above the grid when the
+--   prefix before the cell is too wide, below it otherwise). opts.spill
+--   (vim.g.mdtable_spill) picks what the k spill rows above carry:
+--   "flow" (default): the last k grid lines above the row (its separator,
+--   the previous rows, the delimiter, header and top border near the top),
+--   taken off the block drawn above, so nothing moves and no blank row
+--   appears; rows beyond the lines above fall back to "cell". Spill rows
+--   below likewise carry the first lines of the block below.
+--   "row": blank bordered rows above the whole row (the first one carries
+--   the row's separator). "cell": the row's own grid lines 1..k with only
+--   the edited cell's column empty, its text starting on line k + 1.
 -- * Covered row (project.covered_row): an anchor line with no real cell (the
 --   header while the cursor is outside the table, or the delimiter row under
 --   the cursor). The whole line is concealed and every screen row it occupies
@@ -511,7 +519,8 @@ end
 -- real cell per grid line and their columns inside the cell.
 function M.cursor_row(tbl, lay, r, k, opts)
   local g = M.grid(tbl, lay, opts)
-  local key = r .. ":" .. k
+  local mode = (opts.spill == "row" or opts.spill == "cell") and opts.spill or "flow"
+  local key = r .. ":" .. k .. ":" .. mode
   if g.proj[key] then return g.proj[key] end
   local W = opts.width
   local row, lr = tbl.rows[r], lay.rows[r]
@@ -593,7 +602,6 @@ function M.cursor_row(tbl, lay, r, k, opts)
     if sg.I <= sg.J then sg.sb, sg.se = B[sg.I], B[sg.J] + N[sg.J] else sg.sb, sg.se = sg.s0 or c.s, sg.s0 or c.s end
   end
   local n = #segs
-  local NL = math.max(n, lr.lines)
   local function parts(li)
     local left = emit({}, string.rep(" ", tbl.indent or 0), HL.fill)
     emit(left, "│", hb)
@@ -608,20 +616,47 @@ function M.cursor_row(tbl, lay, r, k, opts)
     if li <= lr.lines then return g.lines[g.first[r] + li - 1] end
     return g.blank
   end
+  -- grid line li of the row with the real cell's column empty ("cell" spill)
+  local function cellblank(li)
+    local left, right = parts(li)
+    emit(left, string.rep(" ", cw), ht)
+    for _, y in ipairs(right) do emit(left, y[1], y[2]) end
+    return left
+  end
   local marks = {}
   conceal(marks, 0, c.s)
   conceal(marks, c.e, #line)
   for i = 1, #c.cs do conceal(marks, c.cs[i], c.ce[i]) end -- incl. the backslash of `\|`
   local sepline = g.sep[r] and g.lines[g.sep[r]] or nil
   local used_sep, spill_above = false, 0
+  local off = 0 -- "cell" spill: grid lines of the row drawn on the spill rows above
+  local ab_end = g.first[r] - 1 -- the last grid line above the row (separator, delimiter or top border)
+  local below_from = g.first[r] + g.count[r]
+  local lil, fb = 0, 0 -- grid lines from above / below drawn on the line's spill rows ("flow")
+  local blank_above, blank_below = 0, 0
   -- row 1: the concealed prefix 1..ia-1 must fit in front of the grid; the rest spills above
   local ap1 = segs[1].pad
   local s0 = 1
   local A = sum(R, 1, ia - 1)
   local cap = W - (lwb + ap1) - raw_lead - segs[1].raw
   if n == 1 then -- keep the trailing bytes on the grid line when they fit (cursor on the last bar stays in the cell)
+    -- ... unless that shows more blank rows than letting it wrap: a spill
+    -- row above is blank unless it carries the separator (or, "flow", a line
+    -- from above); a wrapped tail lands on the row's next grid line, else on
+    -- a blank row below (or, "flow", a line from below). Ties: keep it only
+    -- when it adds no spill row (WP-G review F1)
     local tail = sum(R, ice + 1, nL)
-    if cap - tail >= 0 then cap = cap - tail end
+    if cap - tail >= 0 then
+      local function need(c) return A > c and math.ceil((A - c) / W) or 0 end
+      local nk, nd = need(cap - tail), need(cap)
+      local freeA = mode == "flow" and math.huge or (sepline and 1 or 0)
+      local freeB = math.max(lr.lines - n, 0) + (mode == "flow" and (#g.lines - below_from + 1) or 0)
+      local slack = cap - math.min(A, cap)
+      local t = tail > slack and math.ceil((tail - slack) / W) or 0
+      local bk = math.max(nk - freeA, 0)
+      local bd = math.max(nd - freeA, 0) + math.max(t - freeB, 0)
+      if bk < bd or (bk == bd and nk == nd) then cap = cap - tail end
+    end
   end
   if A > cap then
     local keep = 0
@@ -633,12 +668,31 @@ function M.cursor_row(tbl, lay, r, k, opts)
     local Pw = A - keep
     local padw = math.ceil(Pw / W) * W - Pw
     inline(marks, 0, padw)
-    overlay(marks, 0, 0, sepline or g.blank)
     used_sep = sepline ~= nil
     local starts = place(L, 1, s0 - 1, padw, W)
-    for _, b in ipairs(starts) do overlay(marks, b, 0, g.blank) end
     spill_above = 1 + #starts
+    -- what each spill row carries (header comment)
+    local slots = {}
+    if mode == "flow" then
+      lil = math.min(spill_above, ab_end)
+      for i = 1, lil do slots[i] = g.lines[ab_end - lil + i] end
+    elseif sepline then
+      lil, slots[1] = 1, sepline
+    end
+    for i = #slots + 1, spill_above do
+      if mode == "row" then
+        slots[i] = g.blank
+        blank_above = blank_above + 1
+      else
+        off = off + 1
+        slots[i] = cellblank(off)
+        if off > lr.lines then blank_above = blank_above + 1 end
+      end
+    end
+    overlay(marks, 0, 0, slots[1])
+    for i, b in ipairs(starts) do overlay(marks, b, 0, slots[i + 1]) end
   end
+  local NL = math.max(n + off, lr.lines)
   local carry = sum(R, s0, ia - 1) - sum(V, s0, ia - 1) -- concealed part; the visible part is under the overlay
   local before1 = sum(V, s0, ia - 1) + vis_lead
   local extra, nav, spill_below, suffix_rows = {}, {}, 0, 0
@@ -663,7 +717,7 @@ function M.cursor_row(tbl, lay, r, k, opts)
       cx = cx + V[i]
     end
     nav[li] = nv
-    local left, right = parts(li)
+    local left, right = parts(li + off)
     emit(left, string.rep(" ", apad), ht)
     local at = li == 1 and anchor1 or (spacer_at or sg.sb)
     inline(marks, at, spacer)
@@ -692,10 +746,19 @@ function M.cursor_row(tbl, lay, r, k, opts)
     else
       -- last real line: the concealed suffix wraps into further screen rows,
       -- which carry the remaining grid lines, then blank spill rows
-      local rr = n + 1
+      local rr = n + off + 1
       local starts = place(L, math.max(sg.J, ics - 1) + 1, nL, used, W)
       for _, b in ipairs(starts) do
-        overlay(marks, b, 0, rr <= NL and gridline(rr) or g.blank)
+        local ln
+        if rr <= NL then
+          ln = gridline(rr)
+        elseif mode == "flow" and below_from + fb <= #g.lines then
+          fb = fb + 1
+          ln = g.lines[below_from + fb - 1]
+        else
+          ln, blank_below = g.blank, blank_below + 1
+        end
+        overlay(marks, b, 0, ln)
         if rr > NL then spill_below = spill_below + 1 end
         rr = rr + 1
       end
@@ -703,10 +766,8 @@ function M.cursor_row(tbl, lay, r, k, opts)
       for y = rr, NL do extra[#extra + 1] = gridline(y) end
     end
   end
-  local above = M.slice(g, 1, (g.sep[r] or g.first[r]) - 1)
-  if sepline and not used_sep then above = M.slice(g, 1, g.sep[r]) end
-  local below_from = g.first[r] + g.count[r]
-  local below = concat_slice(g, extra, below_from, #g.lines)
+  local above = M.slice(g, 1, ab_end - lil)
+  local below = concat_slice(g, extra, below_from + fb, #g.lines)
   -- screen rows of the line: spill above + real lines + concealed-suffix rows
   local rows = spill_above + n + suffix_rows
   local is_last = r == #tbl.rows
@@ -716,8 +777,22 @@ function M.cursor_row(tbl, lay, r, k, opts)
     nav = nav, nextbar = bars[k + 1],
     -- the grid of the row: separator above it, its screen rows, its own extra
     -- lines, and the bottom border when it is the last row (scroll-to-fit)
-    height = ((sepline and not used_sep) and 1 or 0) + rows + #extra + (is_last and 1 or 0),
-    sep_above = (sepline and not used_sep) and 1 or 0,
+    -- (the whole line counts, lines from below on its spill rows included:
+    -- Neovim keeps a line that fits the window whole, so a fit that leaves
+    -- them out lets Neovim move the cursor to the next line)
+    height = ((sepline and lil == 0) and 1 or 0) + rows + #extra + ((is_last and fb == 0) and 1 or 0),
+    sep_above = (sepline and lil == 0) and 1 or 0,
+    -- grid lines from above (the separator, "flow": more) drawn on the
+    -- line's first spill rows: still above the row's grid for scroll-to-fit
+    -- and the sticky header (they may go under the float, WP-G)
+    lines_in_line = lil, lines_below_in_line = fb,
+    -- "flow" drew the delimiter (so the header's end) on the line: the
+    -- header is on screen whenever the cursor line is (no sticky float)
+    header_in_line = lil > 0 and tbl.rows[2] and tbl.rows[2].kind == "delim" and ab_end - lil + 1 <= g.first[2] or false,
+    blank_above = blank_above, blank_below = blank_below, mode = mode,
+    -- measurement (tests): raw width before the cell's text, the text's
+    -- display column in the grid, the first segment's raw width
+    dbg = { P = sum(R, 1, ics - 1), lw = lwb + ap1, seg1 = segs[1].raw, W = W },
   }
   g.proj[key] = res
   return res

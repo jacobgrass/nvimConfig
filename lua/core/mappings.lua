@@ -596,4 +596,16 @@ M.gitsigns = {
   },
 }
 
+M.mdtable = {
+  plugin = true,
+  n = {
+    ["<leader>te"] = {
+      function()
+        require("custom.mdtable.celledit").open_at_cursor()
+      end,
+      "Edit table cell in a float",
+    },
+  },
+}
+
 return M

@@ -88,8 +88,11 @@ function H.rule(win, buf, ctx, cr, h)
   local nf = ctx.clipped and n + 1 or n
   local A = ctx.A
   local height = cr and cr.height or th(win, { start_row = A, end_row = A, start_vcol = 0 }).all
-  if height + nf > h then return { show_header = false, float_height = 0 } end
-  local room = #ctx.above - (cr and cr.sep_above or 0)
+  -- lines from above drawn on the row's first screen rows go under the float too
+  local lil = cr and cr.lines_in_line or 0
+  if cr and cr.header_in_line then return { show_header = false, float_height = 0 } end
+  if height - lil + nf > h then return { show_header = false, float_height = 0 } end
+  local room = #ctx.above - (cr and cr.sep_above or 0) + lil
   if room < nf and A > 0 then
     room = room + th(win, { start_row = 0, end_row = A - 1, max_height = nf - room }).all
   end
@@ -258,8 +261,11 @@ function H.scroll_view(win, ctx, h, v)
     pre = pre_of(win, A, fill, h, v)
   end
   local lines = decide(ctx, n, fill, pre)
-  if lines and pre < #lines and A == v.topline - 1 and fill >= #lines then
-    v = { topline = A + 1, topfill = #lines }
+  -- grid lines from above on the line's first screen rows (ctx.lil: the
+  -- separator, "flow": more) sit under the float like filler does (WP-G)
+  local lil = ctx.lil or 0
+  if lines and pre < #lines and A == v.topline - 1 and fill >= #lines - lil then
+    v = { topline = A + 1, topfill = math.max(#lines - lil, 0) }
   end
   return v
 end
@@ -283,7 +289,8 @@ function H.sync(win, ctx, h, view, p)
   local fill = th(win, { start_row = A, end_row = A }).fill
   local pre = pre_of(win, A, fill, h, view)
   local lines = decide(ctx, n, fill, pre)
-  if lines and pre < #lines then lines = nil end -- the cursor line is never under the float
+  -- the cursor line is never under the float (its in-line separator may be)
+  if lines and pre + (ctx.lil or 0) < #lines then lines = nil end
   if not lines then H.close(win); return end
   show(win, buf, lines, require("custom.mdtable.project").block_sig(lines))
   if floats[win] then floats[win].dkey = dkey end
