@@ -124,22 +124,32 @@ function S.check(rows, allow_raw)
   local cur
   local raw = 0
   local in_raw = false -- after a tolerated raw row: its wrapped screen rows (no box characters)
+  -- (the first row that is not the note above a virtual row, WP-J: the
+  -- window's top for a grid scrolled off at the top)
+  local top_i = 1
+  while rows[top_i] and rows[top_i]:find("tall row: Ctrl-hjkl select a cell", 1, true) do top_i = top_i + 1 end
   for i, s in ipairs(rows) do
-    -- the hint init.lua draws above a row drawn raw is not a grid line
-    if s:find("row too tall to render here", 1, true) then goto continue end
+    -- the note init.lua draws above a virtual (tall) row (WP-J; before it,
+    -- the hint above a row drawn raw) is not a grid line
+    if s:find("row too tall to render here", 1, true) or s:find("tall row: Ctrl-hjkl select a cell", 1, true) then goto continue end
     local first = s:match("^%s*(%S)")
     local marker = is_marker(s)
     local cc = cols_of(s, BARS)
     if in_raw and #cc == 0 and not marker then goto continue end
     local after_raw = in_raw -- a raw line at the window top: the grid under it starts a block
     in_raw = false
-    local starts = s:find("┌", 1, true) or (i == 1 and not cur and (BARS[s:match("^%s*([\226][\128-\191][\128-\191])") or ""]))
+    local starts = s:find("┌", 1, true) or (i == top_i and not cur and (BARS[s:match("^%s*([\226][\128-\191][\128-\191])") or ""]))
       or (marker and not (cur and cur.cols)) or (after_raw and not cur and #cc > 0)
     if starts then -- a block starts at its top border or a top marker, or at row 1 when the top is scrolled off
       cur = { top = i, cols = not marker and table.concat(cc, ",") or nil, outer = outer(cc), markers = marker and 1 or 0,
-        clipped = i == 1 and not s:find("┌", 1, true) }
+        clipped = i == top_i and not s:find("┌", 1, true) }
       if marker and #cc ~= 2 then errs[#errs + 1] = ("row %d: marker with %d bars: %q"):format(i, #cc, s) end
       blocks[#blocks + 1] = cur
+      if after_raw and s:find("└", 1, true) then cur.bottom = i; cur = nil end -- a raw row's closing border
+    elseif not cur and first == "|" and raw < (allow_raw or 0) then
+      -- a tolerated raw row at the window top, its hint scrolled off (WP-I:
+      -- rows are raw per row, so also in cell 1 after G)
+      raw, first, in_raw = raw + 1, nil, true
     elseif cur and first == "|" and raw < (allow_raw or 0) then
       raw = raw + 1 -- a ragged row (or a row taller than the window) drawn raw inside the block
       first = nil
@@ -147,6 +157,7 @@ function S.check(rows, allow_raw)
     elseif cur then
       local c = table.concat(cc, ",")
       local nxt = rows[i + 1]
+      if nxt and nxt:find("tall row: Ctrl-hjkl select a cell", 1, true) then nxt = rows[i + 2] end -- (the note, WP-J)
       if marker and nxt and cur.cols ~= "" and (table.concat(cols_of(nxt, BARS), ",") == cur.cols
           or (nxt:match("^%s*|") and raw < (allow_raw or 0))) then -- or a tolerated raw row continues the grid
         -- mid-block marker (the sticky header float carries the clip marker

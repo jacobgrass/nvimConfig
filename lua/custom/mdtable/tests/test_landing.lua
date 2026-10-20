@@ -114,6 +114,8 @@ local ORACLE = [[
         end
         if row.kind == "delim" or (m.tall and m.tall.lnum == l) then li, last = 1, 1 end
         local room = dir == 1 and last - li or li - 1
+        -- WP-J: a virtual (tall) row: j/k scroll it while it has rows to show
+        if m.vrow and m.vrow.lnum == l then room = dir == 1 and (m.vrow.room_down or 0) or (m.vrow.room_up or 0) end
         if n <= room then return l + 1 end
         local R, ri = {}, nil
         for x, rw in ipairs(t.rows) do if rw.kind ~= "delim" then R[#R + 1] = x; if x == x0 then ri = #R end end end
@@ -151,9 +153,20 @@ local CHECK = [[
     if l - 1 >= e.tbl.start_row and l - 1 < e.tbl.end_row then row = e.tbl.rows[l - e.tbl.start_row] end
   end
   local real = row and row.kind ~= "delim" and not row.ragged
+  -- WP-I: a row whose tallest cell's line is taller than the window is
+  -- drawn raw in every cell (per row): the cursor row is then the raw line,
+  -- on screen, not the grid cursor row
+  local raw = m and m.tall and m.tall.lnum == l - 1 and not m.tall.anchor and true or false
+  if raw then real = false end
+  -- WP-J: a row taller than the window is virtual while the cursor is on
+  -- it: the cursor on the row's covered line (on screen), no real cell
+  local virt = m and m.vrow and m.vrow.lnum == l - 1 and true or false
+  if virt then real = false end
   local sp = vim.fn.screenpos(0, l, vim.fn.col("."))
   local rows = S.screen()
   local errs, blocks = S.check(rows, 2)
+  if raw and sp.row <= 0 then errs[#errs + 1] = "raw cursor row off screen" end
+  if virt and sp.row <= 0 then errs[#errs + 1] = "virtual cursor row off screen" end
   local win, mx = vim.api.nvim_get_current_win(), 0
   for _, n in ipairs(require("custom.mdtable.draw").all_ns()) do
     if n.win == win then
@@ -163,7 +176,7 @@ local CHECK = [[
     end
   end
   local onbar = sp.row > 0 and (rows[sp.row] or ""):find("│", 1, true) ~= nil
-  return { line = l, intable = row ~= nil, real = real or false, crow = m and m.cursor and m.cursor.lnum or -1,
+  return { line = l, intable = row ~= nil, real = real or false, raw = raw, virt = virt, crow = m and m.cursor and m.cursor.lnum or -1,
     srow = sp.row, onbar = onbar, errs = errs, nblocks = #blocks, mx = mx, merr = S.errors(), errmsg = vim.v.errmsg }
 ]]
 
@@ -308,25 +321,74 @@ local function e1(name, W, Hh, intent)
       local r = at("C-j from the last row", "<C-j>", 15, { go = { 13, 2 } })
       if r.intable then bad[#bad + 1] = "C-j: still in the table" end
       at("C-k from the header", "<C-k>", 7, { go = { 7, 2 } })
-      at("j from the last row, one-line cell 1", "j", 15, { go = { 13, 1 } })
-      at("<Down> from the last row, cell 1", "<Down>", 15, { go = { 13, 1 } })
+      -- WP-I: a raw last row (per row, at narrow sizes) is walked by its
+      -- screen rows first: j stays on it, then leaves the table after its
+      -- last screen row
+      for _, key in ipairs({ "j", "<Down>" }) do
+        local label = key == "j" and "j from the last row, one-line cell 1" or "<Down> from the last row, cell 1"
+        c.lua(E1, { go = { 13, 1 } }); c.request("nvim_eval", "1")
+        local rk = c.lua(CHECK)
+        if rk.raw or rk.virt then -- (WP-J: a virtual last row: j scrolls it first, while it has rows to show)
+          local room = rk.virt and c.lua("local m = M._last_model(0); return m.vrow and m.vrow.room_down or 0") or 1
+          if room > 0 then at(label .. " (raw row: walks its screen rows)", key, 14) end
+          local n = 0
+          while c.lua("return vim.fn.line('.')") == 14 and n < 80 do c.request("nvim_input", key); c.request("nvim_eval", "1"); n = n + 1 end
+          at(label .. " (raw row: past its last screen row)", nil, 15)
+        else
+          at(label, key, 15, { go = { 13, 1 } })
+        end
+      end
       at("k from the header, cell 1", "k", 7, { go = { 7, 1 } })
       at("<Up> from the header, cell 1", "<Up>", 7, { go = { 7, 1 } })
       at("j from the header, cell 1: first body row", "j", 10, { go = { 7, 1 } })
-      at("j again: the next row", "j", 11)
+      local rj = c.lua(CHECK)
+      -- (WP-J: a virtual (tall) row: j scrolls it, then the next row)
+      if rj.raw or rj.virt then -- WP-I round 3: row 1 raw at this size: j walks its screen rows, then the next row
+        local n = 0
+        while c.lua("return vim.fn.line('.')") == 10 and n < 80 do c.request("nvim_input", "j"); c.request("nvim_eval", "1"); n = n + 1 end
+        at("j again: past the raw row's screen rows, the next row", nil, 11)
+      else
+        at("j again: the next row", "j", 11)
+      end
       at("k: back", "k", 10)
       -- a multi-line cell: j walks its grid lines first
-      at("row 1 cell 3", nil, 10, { go = { 9, 3 } })
-      local n = cells()
-      if n < 2 then bad[#bad + 1] = "row 1 cell 3 should wrap (" .. n .. " lines)" end
-      for i = 1, n - 1 do at("j in the cell " .. i, "j", 10) end
-      at("j past the cell's last line: next row", "j", 11)
+      local r1 = at("row 1 cell 3", nil, 10, { go = { 9, 3 } })
+      if r1.raw or r1.virt then -- WP-I round 3: row 1 raw (its frame is taller than the window): j walks its screen rows
+        local n = 0
+        while c.lua("return vim.fn.line('.')") == 10 and n < 80 do c.request("nvim_input", "j"); c.request("nvim_eval", "1"); n = n + 1 end
+        at("j past the raw row's last screen row: next row", nil, 11)
+      else
+        local n = cells()
+        if n < 2 then bad[#bad + 1] = "row 1 cell 3 should wrap (" .. n .. " lines)" end
+        for i = 1, n - 1 do at("j in the cell " .. i, "j", 10) end
+        at("j past the cell's last line: next row", "j", 11)
+      end
       at("k: back to row 1's last line", "k", 10)
-      at("3j from row 1 cell 1", "3j", 13, { go = { 9, 1 } })
-      at("9j: past the table, on buffer lines (clamped at the last line)", "9j", 17, { go = { 9, 1 } })
+      c.lua(E1, { go = { 9, 1 } }); c.request("nvim_eval", "1")
+      -- (row 1 raw, per row: 3j walks three of its screen rows)
+      local r3 = c.lua(CHECK)
+      local room3 = c.lua("local m = M._last_model(0); return m.vrow and m.vrow.room_down or -1")
+      at("3j from row 1 cell 1", "3j", (r3.raw or (r3.virt and room3 >= 3)) and 10 or 13, { go = { 9, 1 } })
+      c.lua(E1, { go = { 9, 1 } }); c.request("nvim_eval", "1")
+      -- (row 1 raw with more than 9 screen rows: 9j walks 9 of them, WP-I round 3)
+      local sr = c.lua([[local m = M._last_model(0); if not (m.tall and m.tall.lnum == 9) then return 0 end
+        local i = vim.fn.getwininfo(vim.api.nvim_get_current_win())[1]
+        return math.ceil(vim.fn.strdisplaywidth(vim.fn.getline(10)) / (i.width - i.textoff))]])
+      if sr > 9 then
+        at("9j in the raw row 1: nine of its screen rows", "9j", 10, { go = { 9, 1 } })
+      else
+        at("9j: past the table, on buffer lines (clamped at the last line)", "9j", 17, { go = { 9, 1 } })
+      end
       -- exits keep the drawn screen column (wincol), clamped to the end of
       -- the landing screen row when it is shorter
-      local WC = [[return { vim.fn.wincol(), vim.fn.col("."), vim.fn.col("$") - 1, vim.fn.line(".") }]]
+      -- (WP-J: on a virtual row the drawn column is the active cell's grid column)
+      local WC = [[local m = M._last_model(0); local wc = vim.fn.wincol()
+        if m.vrow and m.vrow.lnum == vim.fn.line(".") - 1 then
+          for _, x in ipairs(m.tables) do
+            if x.tbl == m.vrow.tbl then wc = vim.fn.getwininfo(vim.api.nvim_get_current_win())[1].textoff + M.grid(x).left[m.vrow.k] + 1 end
+          end
+        end
+        return { wc, vim.fn.col("."), vim.fn.col("$") - 1, vim.fn.line(".") }]]
       for _, k in ipairs({ 2, 3, 5 }) do
         for _, ex in ipairs({ { 13, "<C-j>", 15 }, { 13, "j", 15 }, { 7, "<C-k>", 7 }, { 7, "k", 7 } }) do
           local label = ("column: %s from %s cell %d"):format(ex[2], ex[1] == 13 and "the last row" or "the header", k)
@@ -350,7 +412,15 @@ local function e1(name, W, Hh, intent)
       at("clamp: k on the header", "k", 8, { go = { 7, 1 } })
       at("clamp: C-k on the header", "<C-k>", 8)
       c.lua("vim.g.mdtable_jk_cross_rows = nil")
-      at("option back on: j exits", "j", 15, { go = { 13, 1 } })
+      c.lua(E1, { go = { 13, 1 } }); c.request("nvim_eval", "1")
+      local rb = c.lua(CHECK)
+      if rb.raw or rb.virt then -- WP-I: the raw last row is walked by screen rows first (WP-J: a virtual one scrolled)
+        local n = 0
+        while c.lua("return vim.fn.line('.')") == 14 and n < 80 do c.request("nvim_input", "j"); c.request("nvim_eval", "1"); n = n + 1 end
+        at("option back on: j exits (after the raw row's screen rows)", nil, 15)
+      else
+        at("option back on: j exits", "j", 15, { go = { 13, 1 } })
+      end
       H.eq(0, c.lua("return M.stats.corrected or 0"), "backup landing corrections")
       if #bad > 0 then error(table.concat(bad, "\n")) end
     end, debug.traceback)
@@ -374,7 +444,13 @@ local VIS = [=[
         local t = {}
         for _, ch in ipairs(g.lines[g.first[x]]) do t[#t + 1] = ch[1] end
         local txt = vim.trim(table.concat(t))
-        for _, s in ipairs(rows) do if s:find(txt, 1, true) then out[#out + 1] = e.tbl.start_row .. ":" .. x; break end end
+        -- WP-I: the cursor row drawn raw (per row) is seen when its line is on screen
+        local mt = M._last_model(0).tall
+        if mt and not mt.anchor and mt.lnum == e.tbl.start_row + x - 1 and vim.fn.screenpos(0, mt.lnum + 1, 1).row > 0 then
+          out[#out + 1] = e.tbl.start_row .. ":" .. x
+        else
+          for _, s in ipairs(rows) do if s:find(txt, 1, true) then out[#out + 1] = e.tbl.start_row .. ":" .. x; break end end
+        end
       end
     end
   end
@@ -392,7 +468,10 @@ local VIS = [=[
     for _, rw in ipairs(e.tbl.rows) do if rw.kind == "body" then b = b + 1 end end
     tabs[#tabs + 1] = { e.tbl.start_row, e.tbl.end_row, b, #M.grid(e).lines, math.floor(vim.api.nvim_win_get_height(0) / 2) }
   end
-  return { vis = out, k = k or 0, tabs = tabs, last = vim.fn.line("$"), col = cl }
+  -- (WP-J: a virtual row scrolls in place: its offset and the view tell a move)
+  local m0, v0 = M._last_model(0), vim.fn.winsaveview()
+  local vo = (m0.vrow and m0.vrow.off or 0) .. ":" .. v0.topline .. ":" .. v0.topfill
+  return { vis = out, k = k or 0, tabs = tabs, last = vim.fn.line("$"), col = cl, vo = vo }
 ]=]
 local function e3(name, W, Hh, src)
   if ONLY and not name:find(ONLY, 1, true) then return end
@@ -426,7 +505,7 @@ local function e3(name, W, Hh, src)
           if VERBOSE then print(("  %s %2d line %d target %s tbl %s %s"):format(dir, i, r.line, ls and ls[1] or "-", tostring(r.intable), table.concat(why, "; "))) end
           if #why > 0 then bad[#bad + 1] = ("%s %d: %s"):format(dir, i, table.concat(why, "; ")) end
           -- a tall row: <C-d> may move within its cell (same line, later grid line)
-          local here = r.line .. ":" .. v.col
+          local here = r.line .. ":" .. v.col .. ":" .. (v.vo or "")
           if here == prev_pos or (dir == "<C-d>" and r.line == v.last) or (dir == "<C-u>" and r.line == 1) then break end
           prev, prev_pos = r.line, here
         end

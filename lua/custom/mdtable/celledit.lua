@@ -1,8 +1,9 @@
 -- custom.mdtable.celledit: floating editor for one Markdown table cell.
 --
--- For rows taller than the window (7 columns of 300-700 characters at 100
+-- For rows taller than the window (7 columns of 300-700 characters at 120
 -- columns or fewer) in-place editing cannot keep the grid: the table stays
--- rendered and the cell is edited in a float over it.
+-- rendered (the row virtual, its active cell highlighted, WP-J) and the
+-- cell is edited in a float over it.
 --
 --   celledit.open(win, lnum, k, opts)  edit cell k (1-based) of line lnum
 --                                      (0-based) of window win's buffer;
@@ -32,9 +33,9 @@
 -- nvim_buf_set_text call (one undo step), then re-renders the window.
 --
 -- Main window while the float is open: the renderer's normal drawing of the
--- cursor row, which for a row taller than the window is the raw-row
--- fallback (option b of the WP-F brief; the report has the probe of the
--- fully virtual option a).
+-- cursor row; a row taller than the window is the virtual row with the
+-- edited cell highlighted (the parent's cursor is on the cell, so the
+-- highlight follows Ctrl-hjkl in the float and stays after closing).
 --
 -- Keys in the float: <C-s> and :w apply and keep it open; normal <CR>
 -- applies and closes; normal <Esc> closes, applying when the text changed;
@@ -42,7 +43,7 @@
 -- <C-h>/<C-j>/<C-k>/<C-l> (normal and insert) apply and move.
 -- From a table: :MdTableCellEdit (:MdTable edit), <leader>te (the mdtable
 -- section of lua/core/mappings.lua, calling open_at_cursor: a notice outside
--- a table), and i/a/I/A on a row drawn raw
+-- a table), and i/a/I/A/s/c/<CR> on a virtual (tall) row
 -- (nav.lua; vim.g.mdtable_cell_editor = false turns that off).
 local api = vim.api
 local scan = require("custom.mdtable.scan")

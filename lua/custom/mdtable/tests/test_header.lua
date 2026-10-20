@@ -52,7 +52,12 @@ local function child(W, Hh)
   end
   function t.aligned(label)
     -- a cursor row taller than the window is drawn raw (init.lua, WP-E E2): one raw row tolerated then
-    local r = c.lua("local rows = S.screen(0); local m = M._last_model(0); local e, b = S.check(rows, (m and m.tall) and 1 or 0); return { e, b, rows }")
+    -- the gutter (number column) blanked, as CH and tmux_check.lua do: a raw
+    -- row (per row since WP-I, also in cell 1) starts with its line number
+    local r = c.lua([[local rows = S.screen(0); local to = vim.fn.getwininfo(vim.api.nvim_get_current_win())[1].textoff
+      local chk = {}
+      for i, x in ipairs(rows) do chk[i] = string.rep(" ", to) .. vim.fn.strcharpart(x, to) end
+      local m = M._last_model(0); local e, b = S.check(chk, (m and m.tall) and 1 or 0); return { e, b, rows }]])
     local errs, blocks, rows = r[1], r[2], r[3]
     if #errs > 0 or #blocks == 0 then
       error(label .. ": " .. (#blocks == 0 and "no rendered table" or table.concat(errs, "\n")) .. "\n" .. t.dump(rows), 2)
@@ -83,12 +88,19 @@ local function child(W, Hh)
     if marker then -- body rows below the marker against the float's top border
       local rest = {}
       for i, r in ipairs(rows) do if i ~= n then rest[#rest + 1] = r end end
-      local e = t.lua("local m = M._last_model(0); return (S.check(..., (m and m.tall) and 1 or 0))", rest)
+      local e = t.lua([[local rest = ...; local to = vim.fn.getwininfo(vim.api.nvim_get_current_win())[1].textoff
+        for i, x in ipairs(rest) do rest[i] = string.rep(" ", to) .. vim.fn.strcharpart(x, to) end -- gutter blanked
+        local m = M._last_model(0); return (S.check(rest, (m and m.tall) and 1 or 0))]], rest)
       if #e > 0 then error(label .. ": below the marker: " .. table.concat(e, "\n") .. "\n" .. t.dump(rows), 2) end
     end
     for i = 1, n do H.eq(f.text[i], rows[i]:sub(1, #f.text[i]), label .. ": screen row " .. i .. " is the float's line") end
     local wl = t.lua("return WINLINE()")
-    if wl - 1 < n then error(label .. (": cursor screen row %d under the %d-line float\n"):format(wl - 1, n) .. t.dump(rows), 2) end
+    -- (WP-J: a virtual row scrolled in place (its top above the float's
+    -- bottom) may have its line, the cursor, under the float: the active
+    -- cell's highlight is what shows)
+    local scrolled = t.lua([[local m = M._last_model(0); local v = m and m.vrow
+      return v ~= nil and v.lnum == vim.fn.line('.') - 1 and (v.off > 0 or (v.pre or 0) < (v.reserve or 0))]])
+    if wl - 1 < n and not scrolled then error(label .. (": cursor screen row %d under the %d-line float\n"):format(wl - 1, n) .. t.dump(rows), 2) end
     return rows, f
   end
   function t.stop() c.stop() end
@@ -357,9 +369,23 @@ for _, mode in ipairs({ "flow", "row", "cell" }) do
     for _, key in ipairs({ "<C-l>", "<C-l>", "<C-l>", "<C-l>", "<C-l>", "<C-l>", "<C-h>", "<C-h>", "<C-h>", "<C-h>", "<C-h>", "<C-h>" }) do
       t.input(key)
       t.input("<Ignore>")
+      -- (a raw row, WP-I round 3 at these sizes in "flow": the cell from the
+      -- cursor's byte, as nav.lua moves by the scan model)
       local c = t.lua([[local c = vim.api.nvim_win_get_cursor(0); local m = M._last_model(0)
         local cell = m and m.cursor and m.cursor.tbl.rows[m.cursor.r].cells[m.cursor.k]
-        return { c[1] - 1, c[2], m and m.cursor and m.cursor.k or 0, m and m.cursor and m.cursor.proj.rows or -1,
+        local k = m and m.cursor and m.cursor.k or 0
+        if m and not m.cursor and m.vrow and m.vrow.lnum == c[1] - 1 then
+          -- WP-J: a virtual (tall) row: its active cell
+          k = m.vrow.k; cell = m.vrow.tbl.rows[m.vrow.r].cells[k]
+        elseif m and not m.cursor and m.tall and m.tall.lnum == c[1] - 1 then
+          for _, e in ipairs(m.tables) do
+            if c[1] - 1 >= e.tbl.start_row and c[1] - 1 < e.tbl.end_row then
+              local row = e.tbl.rows[c[1] - e.tbl.start_row]
+              k = require("custom.mdtable.project").cell_at(row, c[2]); cell = row.cells[k]
+            end
+          end
+        end
+        return { c[1] - 1, c[2], k, m and m.cursor and m.cursor.proj.rows or (m and m.vrow and m.vrow.proj.rows) or -1,
           cell and cell.s or -1, cell and cell.e or -1 }]])
       want_k = (want_k or 1) + (key == "<C-l>" and 1 or -1)
       H.eq(12, c[1], mode .. " " .. key .. ": cursor line")
@@ -488,10 +514,10 @@ case("C8 :MdTable header, g:mdtable_sticky_header, disable/toggle, :bd", 120, 45
   t.lua("vim.g.mdtable_sticky_header = nil"); t.input("<Cmd>lua M.render(0, { force = true })<CR>"); n("g:mdtable_sticky_header=nil", 1)
   t.input("<Cmd>MdTable disable<CR>"); n(":MdTable disable", 0)
   t.input("<Cmd>MdTable enable<CR>"); n(":MdTable enable", 1)
-  -- cell 2 of the last row is taller: the clipped block above it is the
-  -- marker and a separator (2 lines), too short to hold the 4-line float
-  -- without covering the cursor line, so no float
-  t.cur(LAST, t.col(LAST, 2)); n("cell 2 (block above shorter than the float)", 0)
+  -- WP-I: the float is decided per row (the screen is the same in every
+  -- cell): cell 2 of the last row, whose own block above used to be too
+  -- short for the 4-line float, shows the row's float like cell 3
+  t.cur(LAST, t.col(LAST, 2)); n("cell 2 (the row's float, as cell 3)", 1)
   H.ok(t.lua("return #require('custom.mdtable')._last_model(0).tables") > 0, "still rendered")
   t.cur(LAST, t.col(LAST, 3)); n("back to cell 3", 1)
   t.input("<Cmd>MdTable toggle<CR>"); n(":MdTable toggle (off)", 0)
@@ -671,48 +697,46 @@ for _, sz in ipairs({ { 143, 38 }, { 120, 45 } }) do
   end)
 end
 for _, sz in ipairs({ { 100, 20 }, { 97, 31 } }) do
-  case(("C11 tall row %dx%d: j/k through the 731-character cell, no skipcol, no @@@"):format(sz[1], sz[2]), sz[1], sz[2], function(t)
+  -- WP-J: the row is virtual (no longer raw): j/k scroll its virtual block
+  -- one screen row at a time (view, then in-row offset), then leave it
+  case(("C11 tall row %dx%d: virtual; j/k scroll it a screen row at a time, then leave it; no skipcol, no @@@"):format(sz[1], sz[2]), sz[1], sz[2], function(t)
     local lines = needs_tall()
     vim.list_extend(lines, { "", "after" })
     t.open(lines)
     t.cur(LAST + 1, t.col(LAST + 1, 3))
-    H.ok(t.lua("return M._last_model(0).tall ~= nil"), "the row is taller than the window: drawn raw")
-    -- review WP-E F2: j/k walk the raw row's screen rows first, then leave it
-    local TL = LAST + 2 -- 1-based line of the tall row
-    local function rows_left(dir)
-      return t.lua([[local d = ...; local vc = vim.fn.virtcol('.') - 1; local l = vim.fn.line('.') - 1
-        local o = d == 1 and { start_row = l, end_row = l, start_vcol = vc } or { start_row = l, end_row = l, start_vcol = 0, end_vcol = vc + 1 }
-        return vim.api.nvim_win_text_height(0, o).all - 1]], dir)
+    local function vr()
+      return t.lua([[local m = M._last_model(0); local v = m.vrow
+        return v and { v.room_down, v.room_up, v.off, vim.fn.line('.'), m.tall ~= nil } or false]])
     end
-    local function line() return t.lua("return vim.fn.line('.')") end
-    local down = rows_left(1)
-    H.ok(down >= 3, "the raw row has screen rows below the cursor: " .. down)
+    local TL = LAST + 2 -- 1-based line of the tall row
+    local v0 = vr()
+    H.ok(v0, "the row is taller than the window: drawn virtual")
+    H.eq(false, v0[5], "not raw")
+    local down = v0[1]
+    H.ok(down >= 3, "rows to scroll down: " .. down)
     for i = 1, down do
-      local vc0 = t.lua("return vim.fn.virtcol('.')")
       t.input("j")
-      H.eq(TL, line(), "j " .. i .. " stays on the raw row")
-      H.ok(t.lua("return vim.fn.virtcol('.')") > vc0, "j " .. i .. " moved down a screen row")
-      H.ok(t.lua("return M._last_model(0).tall ~= nil"), "j " .. i .. ": the row stays raw")
+      local v = vr()
+      H.ok(v, "j " .. i .. ": still virtual")
+      H.eq({ TL, down - i }, { v[4], v[1] }, "j " .. i .. " stays on the row, one screen row scrolled")
       sizes_ok(t, "j " .. i)
     end
     t.input("j")
-    H.eq(TL + 1, line(), "j on the raw row's last screen row leaves the table")
+    H.eq(TL + 1, t.lua("return vim.fn.line('.')"), "j at the row's end leaves the table")
     t.cur(LAST + 1, t.col(LAST + 1, 3))
-    for _ = 1, down do t.input("j") end
-    H.eq(TL, line(), "back on the raw row's last screen row")
-    local up = rows_left(-1)
-    H.ok(up >= 3, "screen rows above: " .. up)
+    for _ = 1, vr()[1] do t.input("j") end -- (the view differs from the first visit: no note)
+    local up = vr()[2]
+    H.ok(up >= 3, "rows to scroll up: " .. up)
     for i = 1, up do
-      local vc0 = t.lua("return vim.fn.virtcol('.')")
       t.input("k")
-      H.eq(TL, line(), "k " .. i .. " stays on the raw row")
-      H.ok(t.lua("return vim.fn.virtcol('.')") < vc0, "k " .. i .. " moved up a screen row")
+      local v = vr()
+      H.eq({ TL, up - i }, { v[4], v[2] }, "k " .. i .. " stays on the row, one screen row scrolled")
       sizes_ok(t, "k " .. i)
     end
     t.input("k")
-    H.eq(TL - 1, line(), "k on the raw row's first screen row: the row above")
+    H.eq(TL - 1, t.lua("return vim.fn.line('.')"), "k at the row's top: the row above")
     sizes_ok(t, "k across")
-    print(("INFO C11 tall %dx%d: %d screen rows walked down, %d up"):format(sz[1], sz[2], down, up))
+    print(("INFO C11 tall %dx%d: %d screen rows scrolled down, %d up"):format(sz[1], sz[2], down, up))
     t.no_errors("C11 tall")
   end)
 end

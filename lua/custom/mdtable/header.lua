@@ -30,7 +30,11 @@
 -- the float is the header alone above the prose and the real marker.
 -- The cursor line is never under the float: the plan's view puts A's text
 -- below it; on a plain scroll (WinScrolled) the float hides instead, so
--- <C-e> is not fought.
+-- <C-e> is not fought. A virtual cursor row (ctx.tall, WP-J: a row taller
+-- than the window, drawn virtual) is the exception: it scrolls under the
+-- float (in-row scroll), the float shows whenever the header is off screen,
+-- and the plan seats only a clipped block's marker under the float's (the
+-- entry fit seats the row's top below the float, init.lua).
 -- The float spans the whole window (col 0) with a blank textoff-wide prefix,
 -- so the number and sign columns of the lines it covers are hidden too.
 -- Hidden when the window is shorter than the block + 3 lines, the buffer is
@@ -90,9 +94,15 @@ function H.rule(win, buf, ctx, cr, h)
   local height = cr and cr.height or th(win, { start_row = A, end_row = A, start_vcol = 0 }).all
   -- lines from above drawn on the row's first screen rows go under the float too
   local lil = cr and cr.lines_in_line or 0
-  if cr and cr.header_in_line then return { show_header = false, float_height = 0 } end
-  if height - lil + nf > h then return { show_header = false, float_height = 0 } end
-  local room = #ctx.above - (cr and cr.sep_above or 0) + lil
+  -- row-level values (project.row_info, WP-I): the same answer in every cell
+  local ri = cr and ctx.ri
+  -- the header on the cursor line: no float. Per row (the picture is the
+  -- same in every cell, so the float is too): only when every cell has it
+  if cr and (ri and ri.header_all or (not ri and cr.header_in_line)) then return { show_header = false, float_height = 0 } end
+  if not ctx.tall and (ri and ri.hl or height - lil) + nf > h then
+    return { show_header = false, float_height = 0 }
+  end
+  local room = #ctx.above - (ri and ri.sepmin or (cr and cr.sep_above or 0)) + lil
   if room < nf and A > 0 then
     room = room + th(win, { start_row = 0, end_row = A - 1, max_height = nf - room }).all
   end
@@ -197,8 +207,12 @@ local function with_marker(ctx, n, ht)
     if tbl.rows[r].kind ~= "delim" then before = before + 1 end
   end
   local vis = 0
-  for i = n + 1 - ht + 1, #block do -- block line i is at screen row ht + i - 1
-    if fm[block[i]] then vis = vis + 1 end
+  -- block line i is at screen row ht + i - 1, then the lil grid lines drawn
+  -- on the cursor line's first rows (WP-I: the same count in every cell)
+  local lil, ab_end = ctx.lil or 0, (g.first[ctx.r] or 1) - 1
+  for i = n + 1 - ht + 1, #block + lil do
+    local l = i <= #block and block[i] or g.lines[ab_end - lil + i - #block]
+    if fm[l] then vis = vis + 1 end
   end
   local k = before - 1 - vis -- the header is on screen, in the float
   g.header_m = g.header_m or {}
@@ -263,9 +277,14 @@ function H.scroll_view(win, ctx, h, v)
   local lines = decide(ctx, n, fill, pre)
   -- grid lines from above on the line's first screen rows (ctx.lil: the
   -- separator, "flow": more) sit under the float like filler does (WP-G)
+  -- (WP-I: decided on the row's first own grid line, pre + lil, which is on
+  -- the same screen row in every cell; room for the row's most lines from
+  -- above, ri.lil)
   local lil = ctx.lil or 0
-  if lines and pre < #lines and A == v.topline - 1 and fill >= #lines - lil then
-    v = { topline = A + 1, topfill = math.max(#lines - lil, 0) }
+  local T = lines and math.max(#lines, ctx.ri and ctx.ri.lil or 0)
+  if lines and fill + lil < T then T = #lines end -- not enough filler: as before
+  if lines and not ctx.tall and pre + lil < T and A == v.topline - 1 and fill + lil >= T then
+    v = { topline = A + 1, topfill = math.max(T - lil, 0) }
   end
   return v
 end
@@ -290,7 +309,7 @@ function H.sync(win, ctx, h, view, p)
   local pre = pre_of(win, A, fill, h, view)
   local lines = decide(ctx, n, fill, pre)
   -- the cursor line is never under the float (its in-line separator may be)
-  if lines and pre + (ctx.lil or 0) < #lines then lines = nil end
+  if lines and not ctx.tall and pre + (ctx.lil or 0) < #lines then lines = nil end
   if not lines then H.close(win); return end
   show(win, buf, lines, require("custom.mdtable.project").block_sig(lines))
   if floats[win] then floats[win].dkey = dkey end

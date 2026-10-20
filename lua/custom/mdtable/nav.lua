@@ -18,6 +18,18 @@
 -- with a count, or onto a table line from the screen line next to it),
 -- Ctrl-hjkl window moves in normal mode and arrows in insert mode, the rest
 -- builtin. g:mdtable_table_motions = false disables the maps.
+-- WP-J: on a virtual cursor row (a row taller than the window, init.lua),
+-- the cursor stays on the row's line and an active cell is highlighted:
+-- Ctrl-h/Ctrl-l and h/l move it (the cursor goes to the cell's first
+-- character; Ctrl-h/Ctrl-l past the row's last/first cell go on to the
+-- next/previous row as from a row drawn in place, h/l stay in the row as
+-- they do there), Ctrl-j/Ctrl-k go to the same cell of the next/previous row;
+-- j/k scroll the row by one screen row (core.tall_scroll; a count: rows)
+-- and leave it at its ends like j/k past a cell's last/first grid line;
+-- <C-d>/<C-u>/<C-f>/<C-b> scroll it by their amount, then leave it.
+-- i, I, s, c (insert at the text's start), a, A (at its end) and <CR>
+-- and x (normal mode: hidden text is never deleted blindly) open the cell
+-- editor on the active cell (celledit.lua).
 local api = vim.api
 local project = require("custom.mdtable.project")
 local N = {}
@@ -253,6 +265,7 @@ function N.run(i, count)
   local function drawn_col(k, vcol)
     local raw = model.tall and model.tall.lnum == lnum
     if model.cursor and model.cursor.lnum == lnum and not raw then return core.grid(e).left[k] + vcol end
+    if model.vrow and model.vrow.lnum == lnum then return core.grid(e).left[k] + vcol end -- a virtual row: the grid
     -- raw: the wanted column (gj/gk to a shorter last screen row keep it)
     local v = api.nvim_win_call(win, vim.fn.winsaveview)
     local info = vim.fn.getwininfo(win)[1]
@@ -292,6 +305,22 @@ function N.run(i, count)
         return
       end
       m = m - nl
+    end
+  end
+  -- WP-J: a virtual cursor row: h/l move the active cell (Ctrl-h/Ctrl-l),
+  -- j/k scroll the row, leaving it at its ends (cross: the same cell of
+  -- the next/previous row)
+  local vr = model.vrow
+  local within = false -- h/l on a virtual row: like Ctrl-h/Ctrl-l, but they stay in the row (as h/l in a row drawn in place)
+  if vr and vr.lnum == lnum and not insert and row.kind ~= "delim" then
+    if act == "h" or act == "l" then
+      act, within = act == "h" and "H" or "L", true
+    elseif act == "j" or act == "k" then
+      local dir = act == "j" and 1 or -1
+      local done = core.tall_scroll(win, dir, n)
+      want[win] = nil
+      if done < n and cross_rows() then cross(dir, project.cell_at(row, col), 0, n - done) end
+      return
     end
   end
   if act == "h" or act == "l" or act == "j" or act == "k" then
@@ -386,9 +415,9 @@ function N.run(i, count)
     k = math.min(k, #R[ri].row.cells)
     for _ = 1, n do
       if act == "L" then
-        if k < #R[ri].row.cells then k = k + 1 elseif ri < #R then ri, k = ri + 1, 1 else break end
+        if k < #R[ri].row.cells then k = k + 1 elseif ri < #R and not within then ri, k = ri + 1, 1 else break end
       else
-        if k > 1 then k = k - 1 elseif ri > 1 then ri = ri - 1; k = #R[ri].row.cells else break end
+        if k > 1 then k = k - 1 elseif ri > 1 and not within then ri = ri - 1; k = #R[ri].row.cells else break end
       end
     end
   end
@@ -452,6 +481,14 @@ function N.scroll(lhs, count)
   local cur = api.nvim_win_get_cursor(win)
   local lnum, col = cur[1] - 1, cur[2]
   local wl = vim.fn.winline()
+  if model.vrow and model.vrow.lnum == lnum then
+    -- WP-J: a virtual cursor row scrolls by the amount; at its end the
+    -- move goes on to the next/previous row (j/k past the end)
+    if core.tall_scroll(win, dir, amount) == 0 then N.run(dir == 1 and 3 or 4, 0) end
+    local c2 = api.nvim_win_get_cursor(win)
+    N.last_scroll, want[win] = { c2[1], c2[2] }, nil
+    return
+  end
   -- start position: { e, gi } in a table grid or { l, s } on a buffer line
   local pos, k, vcol, sc = nil, 1, 0, 0
   local e0, r0 = table_at(model, lnum)
@@ -585,25 +622,44 @@ local LAND = {
   { "N", function() return { kind = "search", pattern = vim.fn.getreg("/"), backward = vim.v.searchforward == 1 } end },
 }
 local LDESC = "mdtable: landing correction"
-local EDESC = "mdtable: cell editor on a row drawn raw"
+local EDESC = "mdtable: cell editor on a virtual (tall) row"
 
--- i/a/I/A on a row drawn raw (taller than the window, init.lua) open the
--- floating cell editor at the cursor's cell instead of inserting in the
--- line (vim.g.mdtable_cell_editor = false: the builtin keys).
+-- WP-J: the edit keys on a virtual cursor row (a row taller than the window,
+-- init.lua) open the floating cell editor on the active cell instead of
+-- inserting in the line: the float's insert position (nil: normal mode).
+local EDIT = { i = "i", I = "I", s = "i", c = "i", a = "A", A = "A", ["<CR>"] = false, x = false }
+N.EDIT_KEYS = { "i", "a", "I", "A", "s", "c", "<CR>", "x" }
+-- Elsewhere the key does what it did: a global expr mapping of it (e.g. an
+-- operator hint for c) or the builtin.
+local function pass(lhs)
+  if lhs == "c" or lhs == "s" or lhs == "<CR>" or lhs == "x" then
+    for _, m in ipairs(api.nvim_get_keymap("n")) do
+      if m.lhs == lhs and m.expr == 1 and m.callback then return m.callback() or "" end
+    end
+  end
+  return lhs
+end
+
+-- (vim.g.mdtable_cell_editor = false: the keys as elsewhere). A row drawn
+-- raw (the fallback) keeps i/a/I/A at the cursor's offset in its cell.
 local function edit_expr(buf, lhs)
-  if vim.g.mdtable_cell_editor == false or not core.attached(buf) then return lhs end
+  if vim.g.mdtable_cell_editor == false or not core.attached(buf) then return pass(lhs) end
   local win = api.nvim_get_current_win()
   local model = core._last_model(win)
   local lnum = api.nvim_win_get_cursor(win)[1] - 1
-  if not (model and model.tick == api.nvim_buf_get_changedtick(buf) and model.tall and model.tall.lnum == lnum
-      and not model.tall.anchor) then
-    return lhs
+  if not (model and model.tick == api.nvim_buf_get_changedtick(buf)) then return pass(lhs) end
+  if model.vrow and model.vrow.lnum == lnum then
+    local ins = EDIT[lhs]
+    return ("<Cmd>lua require('custom.mdtable.celledit').open_at_cursor({ insert = %s })<CR>"):format(ins and ("%q"):format(ins) or "nil")
   end
-  return ("<Cmd>lua require('custom.mdtable.celledit').open_at_cursor({ insert = %q, at_cursor = true })<CR>"):format(lhs)
+  if model.tall and model.tall.lnum == lnum and not model.tall.anchor and (lhs == "i" or lhs == "a" or lhs == "I" or lhs == "A") then
+    return ("<Cmd>lua require('custom.mdtable.celledit').open_at_cursor({ insert = %q, at_cursor = true })<CR>"):format(lhs)
+  end
+  return pass(lhs)
 end
 
 function N.map(buf)
-  for _, lhs in ipairs({ "i", "a", "I", "A" }) do
+  for _, lhs in ipairs(N.EDIT_KEYS) do
     vim.keymap.set("n", lhs, function() return edit_expr(buf, lhs) end, { buffer = buf, expr = true, desc = EDESC })
   end
   for _, l in ipairs(LAND) do

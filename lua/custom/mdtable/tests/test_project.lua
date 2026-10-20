@@ -330,20 +330,28 @@ H.run("draw: a cursor move touches only cursor-row marks, 2 anchors and 2 concea
       seen = seen + 1
       local c = M.stats.marks
       if seen > 1 then
-        H.eq(0, c.set, "no new persistent marks on a move")
+        -- (WP-J: a virtual row draws its own lines in a below block, which
+        -- a row drawn in place may not have had: at most that one new mark)
+        local vt = M._last_model(win).vrow ~= nil or was_tall
+        H.ok(c.set <= (vt and 1 or 0), ("new persistent marks on a move: %d"):format(c.set))
         H.eq(0, c.deleted_conceal, "no conceal_lines deletes")
         -- entering or leaving a row drawn raw (taller than the window) also
         -- adds or drops the cell-editor hint line above it: one more update
-        local tall = M._last_model(win).tall ~= nil
+        -- (WP-J: such a row is now virtual: the note, or the re-budget of its
+        -- below block)
+        local tall = M._last_model(win).tall ~= nil or M._last_model(win).vrow ~= nil
         local allow = 4 + ((tall or was_tall) and 1 or 0)
         H.ok(c.updated <= allow, ("updated %d <= 2 anchors + 2 conceal toggles%s"):format(c.updated,
           allow > 4 and " + the hint" or ""))
       end
-      was_tall = M._last_model(win).tall ~= nil
+      was_tall = M._last_model(win).tall ~= nil or M._last_model(win).vrow ~= nil
     end
-    -- a move within the same cell changes nothing at all
-    api.nvim_win_set_cursor(win, { 11, 11 }); M.render(win)
-    api.nvim_win_set_cursor(win, { 11, 12 }); M.render(win)
+    -- a move within the same cell changes nothing at all (cursor(), as
+    -- nav.lua moves: nvim_win_set_cursor validates the cursor against the
+    -- old marks first; WP-J: with every row of this table virtual at this
+    -- size, the header the anchor and the table at EOF, it relocates it)
+    vim.fn.cursor(11, 12); M.render(win)
+    vim.fn.cursor(11, 13); M.render(win)
     local c = M.stats.marks
     H.eq({ 0, 0, 0, 0 }, { c.set, c.updated, c.deleted, c.cursor }, "same cell: nothing touched")
     M.detach(buf)

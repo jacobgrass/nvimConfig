@@ -64,7 +64,7 @@ function _G.CHECK(rows, win)
   local m = M._last_model(win or 0)
   local out = {}
   for _, r in ipairs(rows) do
-    if not r:find("row too tall to render here", 1, true) then out[#out + 1] = r end
+    if not r:find("row too tall to render here", 1, true) and not r:find("tall row: Ctrl-hjkl", 1, true) then out[#out + 1] = r end
   end
   return S.check(out, (m and m.tall) and 1 or 0)
 end
@@ -503,10 +503,12 @@ case("C7 no orphan floats or buffers: :q of the parent split, :bd, :tabnew, clos
 end)
 
 ------------------------------------------------------------------------------
--- wiring (init.lua, nav.lua): i/a/I/A on a row drawn raw, the hint,
--- :MdTable edit, :MdTable disable, detach
+-- wiring (init.lua, nav.lua): the edit keys on a virtual (tall) row, the
+-- note, :MdTable edit, :MdTable disable, detach. WP-J: a row taller than
+-- the window is virtual (no longer raw): i, I, s, c open the editor at the
+-- text's start, a, A at its end, <CR> in normal mode, on the active cell.
 
-local HINT = "row too tall to render here — i or \\te opens the cell editor"
+local HINT = "tall row: Ctrl-hjkl select a cell, i edits in a float"
 local function cell_k(t) -- cell of the main window's cursor
   return t.lua("local c = vim.api.nvim_win_get_cursor(0); local m = require('custom.mdtable.scan').tables(0, c[1] - 1, c[1]); for _, tb in ipairs(m) do local r = tb.rows[c[1] - tb.start_row]; if r then return require('custom.mdtable.project').cell_at(r, c[2]) end end")
 end
@@ -515,46 +517,52 @@ local function screen_has(t, text)
   for i, r in ipairs(rows) do if r:find(text, 1, true) then return i, rows end end
   return nil, rows
 end
+local function line_of(t, l) return t.lua("local l = ...; return vim.api.nvim_buf_get_lines(0, l, l + 1, false)[1]", l) end
+local VSTATE = "local m = M._last_model(0); return { m.vrow ~= nil, m.tall ~= nil, m.active and m.active.k or 0 }"
 
-for _, sz in ipairs({ { 100, 20 }, { 100, 30 } }) do
+for _, sz in ipairs({ { 100, 20 }, { 100, 30 }, { 120, 45 } }) do
   local W, Hh = sz[1], sz[2]
   local tag = W .. "x" .. Hh
-  case("W1 " .. tag .. ": raw row: hint above it; i/a/I/A open the editor at the cursor's cell; back in the same cell", W, Hh, function(t)
+  case("W1 " .. tag .. ": virtual row: the note once; i/a/I/A/s/c/<CR> open the editor on the active cell; exact bytes; highlight stays", W, Hh, function(t)
     t.open("needs.md")
+    t.lua("M._reset_hint()")
     local cell = t.cell(ROW12, 3)
     t.cur(ROW12, cell.s + 7)
-    H.ok(t.lua("return M._last_model(0).tall ~= nil"), "the row is drawn raw")
+    H.eq({ true, false, 3 }, t.lua(VSTATE), "virtual row (not raw), active cell 3")
     local hi, rows = screen_has(t, HINT)
-    H.ok(hi, "hint on screen\n" .. t.dump(rows))
-    H.ok(rows[hi + 1]:match("^%s*|"), "hint right above the raw row\n" .. t.dump(rows))
-    t.aligned(tag .. " with the hint")
+    H.ok(hi, "note on screen\n" .. t.dump(rows))
+    H.ok(rows[hi + 1]:find("├", 1, true), "note right above the row's separator\n" .. t.dump(rows))
+    t.aligned(tag .. " with the note")
+    local line0 = line_of(t, ROW12)
     t.input("i")
     local f = t.fl()
     H.ok(f, "i opens the editor")
     H.eq({ ROW12, 3, "i" }, { f.lnum, f.k, f.mode }, "cell 3, insert mode")
-    H.eq({ 1, 7 }, f.cursor, "at the cursor's offset")
+    H.eq({ 1, 0 }, f.cursor, "at the text's start")
     t.input("Q<Esc><CR>")
-    H.eq(cell.text:sub(1, 7) .. "Q" .. cell.text:sub(8), t.cell(ROW12, 3).text, "typed at the offset")
+    H.eq(line0:sub(1, cell.s) .. "Q" .. line0:sub(cell.s + 1), line_of(t, ROW12), "exact bytes: Q before the cell's text")
     H.ok(not t.fl(), "closed")
     H.eq(ROW12 + 1, t.lua("return vim.fn.line('.')"), "back on the row")
-    H.eq(3, cell_k(t), "back in cell 3")
-    H.ok(t.lua("return M._last_model(0).tall ~= nil"), "still drawn raw")
+    H.eq({ true, false, 3 }, t.lua(VSTATE), "the highlight stays on cell 3")
     t.aligned(tag .. " after the editor")
-    -- A: insert at the end; I: at the start; a: after the cursor's character
-    t.input("A")
-    f = t.fl()
-    H.eq({ "i", #f.text[1] }, { f.mode, f.cursor[2] }, "A: insert at the end")
-    t.input("<Esc>q")
-    t.input("I")
-    f = t.fl()
-    H.eq({ "i", 0 }, { f.mode, f.cursor[2] }, "I: insert at the start")
-    t.input("<Esc>q")
-    t.cur(ROW12, t.cell(ROW12, 3).s + 2)
-    t.input("a")
-    f = t.fl()
-    H.eq({ "i", 3 }, { f.mode, f.cursor[2] }, "a: after the cursor's character")
+    for _, k in ipairs({ { "a", "i", "end" }, { "A", "i", "end" }, { "I", "i", 0 }, { "s", "i", 0 }, { "c", "i", 0 },
+        { "<CR>", "n", 0 }, { "x", "n", 0 } }) do
+      t.input(k[1])
+      f = t.fl()
+      H.ok(f, k[1] .. " opens the editor")
+      H.eq({ 3, k[2], k[3] == "end" and #f.text[1] or k[3] }, { f.k, f.mode, f.cursor[2] }, k[1] .. ": cell, mode, cursor")
+      t.input(k[2] == "i" and "<Esc>q" or "q")
+      H.ok(not t.fl(), k[1] .. ": closed")
+      H.eq({ true, false, 3 }, t.lua(VSTATE), k[1] .. ": the highlight stays on cell 3")
+    end
+    H.eq(line0:sub(1, cell.s) .. "Q" .. line0:sub(cell.s + 1), line_of(t, ROW12), "q discarded nothing else; x deleted nothing")
+    -- the note: only during the session's first visit of a virtual row
+    t.input("<C-k>")
+    t.input("<C-j>")
+    H.eq({ ROW12 + 1, 3 }, { t.lua("return vim.fn.line('.')"), cell_k(t) }, "back on the row, cell 3")
+    H.eq(nil, (screen_has(t, HINT)), "no note on the second visit")
     -- move to the next row in the editor: closing lands in that row's cell
-    t.input("<C-j><Esc><CR>")
+    t.input("i<C-j><Esc><CR>")
     H.eq(ROW12 + 2, t.lua("return vim.fn.line('.')"), "on the next row after <C-j>")
     H.eq(3, cell_k(t), "in cell 3 of the next row")
     t.aligned(tag .. " after <C-j>")
@@ -562,30 +570,33 @@ for _, sz in ipairs({ { 100, 20 }, { 100, 30 } }) do
   end)
 end
 
-case("W2 mdtable_cell_editor = false: i inserts in the line, no hint; a row that fits keeps i", 100, 20, function(t)
+case("W2 mdtable_cell_editor = false: i inserts in the line, no note; mdtable_tall_hint = false: no note", 100, 20, function(t)
   t.open("needs.md", "vim.g.mdtable_cell_editor = false")
+  t.lua("M._reset_hint()")
   t.cur(ROW12, t.col(ROW12, 3))
-  H.ok(t.lua("return M._last_model(0).tall ~= nil"), "drawn raw")
+  H.ok(t.lua("return M._last_model(0).vrow ~= nil"), "virtual row")
   t.input("<Cmd>lua M.render(0, { force = true })<CR>")
-  H.eq(nil, (screen_has(t, HINT)), "no hint")
+  H.eq(nil, (screen_has(t, HINT)), "no note")
   t.input("i")
   H.eq({ false, "i" }, { t.fl() ~= nil, t.lua("return vim.api.nvim_get_mode().mode") }, "builtin insert")
   t.input("<Esc>")
-  -- the editor on, the hint off
-  t.lua("vim.g.mdtable_cell_editor = nil; vim.g.mdtable_tall_hint = false")
+  -- the editor on, the note off
+  t.lua("vim.g.mdtable_cell_editor = nil; vim.g.mdtable_tall_hint = false; M._reset_hint()")
   t.input("<Cmd>lua M.render(0, { force = true })<CR>")
-  H.eq(nil, (screen_has(t, HINT)), "mdtable_tall_hint = false: no hint")
+  H.eq(nil, (screen_has(t, HINT)), "mdtable_tall_hint = false: no note")
   t.input("i")
   H.ok(t.fl(), "the editor still opens")
   t.input("<Esc>q")
   t.no_errors("W2")
 end)
 
-case("W3 120x45: the row fits, i is the builtin insert", 120, 45, function(t)
+-- (140x50: row 12 fits the window, it is drawn in place)
+case("W3 140x50: the row fits, i is the builtin insert", 140, 50, function(t)
   t.open("needs.md")
+  t.lua("M._reset_hint()")
   t.cur(ROW12, t.col(ROW12, 3))
-  H.eq(false, t.lua("return M._last_model(0).tall ~= nil"), "not raw")
-  H.eq(nil, (screen_has(t, HINT)), "no hint")
+  H.eq({ false, false }, t.lua("local m = M._last_model(0); return { m.tall ~= nil, m.vrow ~= nil }"), "in place: not raw, not virtual")
+  H.eq(nil, (screen_has(t, HINT)), "no note")
   t.input("i")
   H.eq({ false, "i" }, { t.fl() ~= nil, t.lua("return vim.api.nvim_get_mode().mode") }, "builtin insert")
   t.input("<Esc>")

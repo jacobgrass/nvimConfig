@@ -231,10 +231,13 @@ H.run("conceal-only query gives the same ranges as the full highlights query", f
             local line = lines[row.lnum + 1]
             for _, c in ipairs(row.cells) do
               local cs, ce = merged(full[row.lnum] or {}, c.s, c.e)
-              -- scan adds the backslash of `\|`; the full query does not conceal it
+              -- scan adds the backslash of `\|`, and (WP-I round 3) of every
+              -- backslash escape, as Neovim draws it (highlights.scm conceals
+              -- it with #offset!); this full-query oracle conceals neither
               local ms, me = {}, {}
               for i = 1, #c.cs do
-                if not (c.ce[i] == c.cs[i] + 1 and line:sub(c.cs[i] + 1, c.cs[i] + 2) == "\\|") then
+                if not (c.ce[i] == c.cs[i] + 1 and line:sub(c.cs[i] + 1, c.cs[i] + 1) == "\\"
+                    and line:sub(c.cs[i] + 2, c.cs[i] + 2):match("%p")) then
                   ms[#ms + 1], me[#me + 1] = c.cs[i], c.ce[i]
                 end
               end

@@ -65,6 +65,21 @@ end
 -- needs.md: header at line 7, delimiter 8, body rows 9..13 (0-based)
 local HEADER, FIRST, LAST = 7, 9, 13
 
+-- WP-I: a row whose tallest cell's line is taller than the window is drawn
+-- raw in every cell (per row; it used to be raw only in its tall cells):
+-- the raw cursor row the alignment check tolerates (1), with its hint shown
+local function raw_of(t, win)
+  local r = t.lua([[local w = ... ; w = w ~= 0 and w or vim.api.nvim_get_current_win()
+    local m = M._last_model(w); local raw = m and m.tall and not m.tall.anchor
+    if not raw then return 0 end
+    for _, x in ipairs(vim.api.nvim_win_call(w, function() return S.screen(0) end)) do
+      if x:find("tall row: Ctrl-hjkl select a cell", 1, true) then return 1 end -- (WP-J: the note)
+    end
+    return -1]], win or 0)
+  H.ok(r >= 0, "raw row shows its hint")
+  return r
+end
+
 for _, size in ipairs({ { 120, 45 }, { 80, 30 } }) do
   local W, Hh = size[1], size[2]
   case(("needs %dx%d: cursor outside, header, cells 1/3/last of a wrapped row, last row"):format(W, Hh), W, Hh, function(t)
@@ -72,14 +87,14 @@ for _, size in ipairs({ { 120, 45 }, { 80, 30 } }) do
     local _, blocks = t.aligned("outside")
     H.eq(1, #blocks, "one table")
     t.cur(HEADER, t.lua("return S.cell_col(...)", HEADER, 2))
-    t.aligned("header row")
+    t.aligned("header row", raw_of(t))
     for _, j in ipairs({ 1, 3, 7 }) do
       t.cur(FIRST + 1, t.lua("return S.cell_col(...)", FIRST + 1, j))
-      local rows = t.aligned("cell " .. j)
+      local rows = t.aligned("cell " .. j, raw_of(t))
       H.ok(find(rows, "Titles solve") or j ~= 3, "cell 3 text visible")
     end
     t.cur(LAST, t.lua("return S.cell_col(...)", LAST, 3))
-    t.aligned("last row")
+    t.aligned("last row", raw_of(t))
     t.no_errors("sweep")
   end)
 end
@@ -201,7 +216,7 @@ case("vsplit: both windows aligned with their own cursor and width", 120, 45, fu
   t.cur(FIRST, t.lua("return S.cell_col(...)", FIRST, 3))
   t.input("<C-w>w")
   t.cur(FIRST + 1, t.lua("return S.cell_col(...)", FIRST + 1, 1))
-  for _, w in ipairs(wins) do t.aligned("window " .. w, 0, w) end
+  for _, w in ipairs(wins) do t.aligned("window " .. w, raw_of(t, w), w) end
   t.no_errors("vsplit")
 end)
 
@@ -253,7 +268,10 @@ case("separators toggle, toggle/disable/enable, stats", 120, 45, function(t)
   t.no_errors("commands")
 end)
 
-case("scroll-to-fit: no pinning on entry from above, minimal scroll when clipped", 120, 45, function(t)
+-- (180 columns since WP-I: narrower, the third body row is raw in every
+-- cell, its frame (every cell's line on screen from one view) taller than
+-- the window, and raw rows are not fitted)
+case("scroll-to-fit: no pinning on entry from above, minimal scroll when clipped", 180, 45, function(t)
   t.open("needs.md")
   local v0 = t.lua("return vim.fn.winsaveview()")
   for _ = 1, HEADER do t.input("j") end

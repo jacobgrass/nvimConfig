@@ -29,17 +29,41 @@
 --   "row": blank bordered rows above the whole row (the first one carries
 --   the row's separator). "cell": the row's own grid lines 1..k with only
 --   the edited cell's column empty, its text starting on line k + 1.
+-- * Per row (WP-I): moving between the cells of a row moves nothing on
+--   screen. project.row_info() gives the row-level values: every cell is
+--   drawn with the row's grid lines (nl), the raw decision (init.lua: the
+--   tallest cell's line taller than the window), the clip cuts, the sticky
+--   header rule and scroll-to-fit use the row's values, and init.lua keeps
+--   topfill following lines_in_line when the cursor line is at the window
+--   top. The screen text is the same in every cell too (WP-I round 3):
+--   "flow" spill rows beyond the table's lines above carry the buffer lines
+--   above the table (opts.ext: concealed and redrawn while the cursor is on
+--   that row; empty rows above the table's top border when the buffer has
+--   too few lines above it), never the row's own lines; a "flow" row whose
+--   frame (the rows that show every cell's line from one view: max
+--   lines_in_line + max depth) is taller than the window is drawn raw (the
+--   round-2 "cell" spill fallback moved the edited column's text). "row"
+--   and "cell" keep their blank spill rows, so their rows may still change
+--   height by cell. "flow" rows past the table's end are empty rows,
+--   matched by empty virtual lines in the other cells.
 -- * Covered row (project.covered_row): an anchor line with no real cell (the
 --   header while the cursor is outside the table, or the delimiter row under
 --   the cursor). The whole line is concealed and every screen row it occupies
 --   carries the next grid line as an overlay, so it adds no blank rows.
+-- * Virtual cursor row (project.tall_row, WP-J): a row taller than the
+--   window (init.lua's predicate) is drawn like a covered row while the
+--   cursor is on it, on the grid of hl_grid (the active cell and its header
+--   cell highlighted, the text identical), so moving between its cells
+--   changes highlights only. `off` scrolls inside the row: the first `off`
+--   lines of the row move from the line to the block above (init.lua keeps
+--   the view, so every screen row moves by one line per step).
 --
 -- Mark specs: { col, opts } (the row is the anchor line, supplied by draw).
 local M = {}
 local strwidth = vim.api.nvim_strwidth
 
 M.HL = { fill = "MdTableFill", head_b = "MdTableHead", row_b = "MdTableRow", head_t = "@markup.heading", row_t = "Normal",
-  more = "MdTableMore" }
+  more = "MdTableMore", active = "MdTableActiveCell", active_col = "MdTableActiveCol" }
 local HL = M.HL
 
 local function emit(out, text, hl)
@@ -198,7 +222,7 @@ function M.grid(tbl, lay, opts)
   local left, x = {}, (tbl.indent or 0) + 1
   for k = 1, tbl.ncols do left[k] = x + 1; x = x + widths[k] + 3 end
   g = { lines = lines, first = first, count = count, sep = sep, left = left, widths = widths,
-    blank = full_line(tbl, widths, nil, nil, 1), W = W, slices = {}, proj = {} }
+    blank = full_line(tbl, widths, nil, nil, 1), empty = { { "", HL.fill } }, W = W, slices = {}, proj = {} }
   gmemo[lay] = g
   return g
 end
@@ -319,13 +343,17 @@ end
 -- `block` cut to at most `keep` (>= 1) lines including the marker; the cut
 -- falls on a row boundary when the kept part has one. Memoized per block, so
 -- an unchanged clip keeps its identity (and draw.lua leaves its mark alone).
+-- lim (>= 0): the boundary search leaves out the lim lines next to the
+-- anchor, which other cells of the cursor row draw on the line itself
+-- (WP-I: the same cut, so the same screen rows and marker, in every cell).
 local clipmemo = setmetatable({}, { __mode = "k" })
-function M.clip(g, tbl, block, keep, side)
+function M.clip(g, tbl, block, keep, side, lim)
   local n = #block
   if n <= keep then return block end
   local per = clipmemo[block]
   if not per then per = {}; clipmemo[block] = per end
-  local key = side .. keep
+  lim = math.max(lim or 0, 0)
+  local key = side .. keep .. ":" .. lim
   if per[key] then return per[key] end
   local ro = rowof(g, tbl)
   local hidden, cnt = {}, 0
@@ -337,16 +365,16 @@ function M.clip(g, tbl, block, keep, side)
   if side == "above" then
     local s = n - keep + 2 -- first kept line
     local s2 = s
-    while s2 <= n and ro[block[s2]] and ro[block[s2]] == ro[block[s2 - 1]] do s2 = s2 + 1 end
-    if s2 <= n then s = s2 end
+    while s2 <= n - lim and ro[block[s2]] and ro[block[s2]] == ro[block[s2 - 1]] do s2 = s2 + 1 end
+    if s2 <= n - lim then s = s2 end
     for i = 1, s - 1 do hide(block[i]) end
     res[1] = M.marker(g, tbl, cnt)
     for i = s, n do res[#res + 1] = block[i] end
   else
     local e = keep - 1 -- last kept line
     local e2 = e
-    while e2 >= 1 and ro[block[e2]] and ro[block[e2]] == ro[block[e2 + 1]] do e2 = e2 - 1 end
-    if e2 >= 1 then e = e2 end
+    while e2 >= 1 + lim and ro[block[e2]] and ro[block[e2]] == ro[block[e2 + 1]] do e2 = e2 - 1 end
+    if e2 >= 1 + lim then e = e2 end
     for i = 1, e do res[i] = block[i] end
     for i = e + 1, n do hide(block[i]) end
     res[#res + 1] = M.marker(g, tbl, cnt)
@@ -481,7 +509,7 @@ function M.covered_row(tbl, lay, r, opts)
     if from + i <= last then overlay(marks, b, 0, g.lines[from + i]) end
   end
   local consumed = math.min(#starts + 1, last - from + 1)
-  local res = { marks = marks, rows = #starts + 1, from = from, consumed = consumed,
+  local res = { marks = marks, rows = #starts + 1, from = from, consumed = consumed, starts = starts,
     above = M.slice(g, 1, from - 1), below = M.slice(g, from + consumed, last), height = #starts + 1 }
   g.proj[key] = res
   return res
@@ -511,16 +539,123 @@ function M.covered_tail(tbl, lay, opts)
   return res
 end
 
+-- Grid line li of row `row` with cell k's content (pad and text) in hlk;
+-- the bars keep the row's group.
+local function hl_line(tbl, widths, row, lr, li, k, hlk)
+  local hb, ht = hls(row.kind)
+  local out = emit({}, string.rep(" ", tbl.indent or 0), HL.fill)
+  emit(out, "│", hb)
+  cells_into(out, tbl, widths, row, lr, li, 1, k - 1, hb, ht)
+  cells_into(out, tbl, widths, row, lr, li, k, k, hb, hlk)
+  return cells_into(out, tbl, widths, row, lr, li, k + 1, tbl.ncols, hb, ht)
+end
+
+-- The grid of M.grid with the active cell (row r, cell k) in HL.active and
+-- the header cell of column k in HL.active_col (WP-J). Same text and line
+-- count; only those rows' lines are new objects (block signatures of the
+-- rest stay). Memoized on the grid per (r, k); own slices and projections.
+function M.hl_grid(tbl, lay, opts, r, k)
+  local g = M.grid(tbl, lay, opts)
+  g.hl = g.hl or {}
+  local key = r .. ":" .. k
+  local hg = g.hl[key]
+  if hg then return hg end
+  local lines = {}
+  for i, l in ipairs(g.lines) do lines[i] = l end
+  local function paint(x, hlk)
+    local row, lr = tbl.rows[x], lay.rows[x]
+    if not (row and lr and g.first[x]) or row.kind == "delim" or row.ragged or k > #row.cells then return end
+    for li = 1, g.count[x] do lines[g.first[x] + li - 1] = hl_line(tbl, lay.widths, row, lr, li, k, hlk) end
+  end
+  for x, row in ipairs(tbl.rows) do if row.kind == "header" then paint(x, HL.active_col) end end
+  paint(r, HL.active)
+  hg = { lines = lines, first = g.first, count = g.count, sep = g.sep, left = g.left, widths = g.widths, blank = g.blank,
+    empty = g.empty, W = g.W, slices = {}, proj = {}, base = g }
+  g.hl[key] = hg
+  return hg
+end
+
+-- Virtual cursor row r (WP-J), active cell k: the line is a covered row
+-- (every byte concealed; each of its screen rows carries a grid line as an
+-- overlay, as the header does while the cursor is outside the table) over
+-- the "tape" of hl_grid: the cursor stays on its own visible line, and the
+-- screen text is the same in every cell. off (clamped to the row's lines):
+-- in-row scroll, the row's first off lines move to the block above. hint
+-- (a virtual line or nil): a note drawn right above the row (its
+-- separator). Memoized per (r, k, off, hint). Returns { marks, above,
+-- below, rows (screen rows of the line), consumed (tape lines on it), s
+-- (tape index on its first screen row), from_t (the row's separator or
+-- first line), first_t, last_t (the row's lines), ntape, off, k, g }.
+function M.tall_row(tbl, lay, r, k, off, opts, hint)
+  local hg = M.hl_grid(tbl, lay, opts, r, k)
+  local from = hg.sep[r] or hg.first[r]
+  local tg = hg
+  if hint then
+    hg.tapes = hg.tapes or {}
+    tg = hg.tapes[hint]
+    if not tg then
+      local lines = {}
+      for i = 1, from - 1 do lines[i] = hg.lines[i] end
+      lines[from] = hint
+      for i = from, #hg.lines do lines[i + 1] = hg.lines[i] end
+      tg = { lines = lines, slices = {} }
+      hg.tapes[hint] = tg
+    end
+  end
+  local d = hint and 1 or 0
+  local from_t, first_t = from + d, hg.first[r] + d
+  local last_t = first_t + hg.count[r] - 1
+  off = math.max(0, math.min(off or 0, last_t - from_t))
+  local key = "T" .. r .. ":" .. k .. ":" .. off .. (hint and (":" .. tostring(hint)) or "")
+  local res = hg.proj[key]
+  if res then return res end
+  local cov = M.covered_row(tbl, lay, r, opts)
+  local tape, row = tg.lines, tbl.rows[r]
+  local s = from_t + off
+  local marks = {}
+  conceal(marks, 0, #row.line)
+  overlay(marks, 0, 0, tape[s] or hg.empty)
+  for i, b in ipairs(cov.starts) do overlay(marks, b, 0, tape[s + i] or hg.empty) end
+  local consumed = math.max(0, math.min(cov.rows, #tape - s + 1))
+  res = { marks = marks, rows = cov.rows, consumed = consumed, s = s, from_t = from_t, first_t = first_t, last_t = last_t,
+    ntape = #tape, off = off, k = k, g = hg, above = M.slice(tg, 1, s - 1), below = M.slice(tg, s + consumed, #tape) }
+  hg.proj[key] = res
+  return res
+end
+
 -- Cursor row r with the real cell k. opts: { width = W, separators, tabstop }.
 -- Returns { marks, extra (virtual lines that follow the row), above, below,
 -- rows (screen rows of the line incl. spill), spill_above, spill_below,
--- used_sep, height (grid height incl. separator and own lines), nav }.
+-- used_sep, height (grid height incl. separator and own lines), nav, nl }.
 -- nav[li] = { b = {}, n = {}, w = {}, col = {} }: visible characters of the
 -- real cell per grid line and their columns inside the cell.
-function M.cursor_row(tbl, lay, r, k, opts)
+-- nlmin (optional): draw the row with at least nlmin grid lines (nl), so
+-- every cell of a row has the same height (row_info().nl, WP-I); the extra
+-- lines are the row's blank grid lines, after the cell's text.
+-- after (optional, "flow"): screen rows past the table's end that the row's
+-- longest line takes (row_info().after); a cell whose line ends sooner gets
+-- empty virtual lines after the table instead, so text below stays put.
+function M.cursor_row(tbl, lay, r, k, opts, nlmin, after)
   local g = M.grid(tbl, lay, opts)
   local mode = (opts.spill == "row" or opts.spill == "cell") and opts.spill or "flow"
-  local key = r .. ":" .. k .. ":" .. mode
+  local key = r .. ":" .. k .. ":" .. mode .. (opts.ext and (":e" .. tostring(opts.ext)) or "")
+  if after then
+    local nat = M.cursor_row(tbl, lay, r, k, opts, nlmin)
+    if mode ~= "flow" or after <= nat.blank_below then return nat end
+    key = key .. ":p" .. (nlmin or 0) .. ":a" .. after
+    if g.proj[key] then return g.proj[key] end
+    local res = setmetatable({}, { __index = nat })
+    local below = vim.list_slice(nat.below)
+    for _ = nat.blank_below + 1, after do below[#below + 1] = g.empty end
+    res.below = below
+    g.proj[key] = res
+    return res
+  end
+  if nlmin then
+    local nat = M.cursor_row(tbl, lay, r, k, opts)
+    if nat.nl >= nlmin then return nat end
+    key = key .. ":p" .. nlmin
+  end
   if g.proj[key] then return g.proj[key] end
   local W = opts.width
   local row, lr = tbl.rows[r], lay.rows[r]
@@ -674,8 +809,15 @@ function M.cursor_row(tbl, lay, r, k, opts)
     -- what each spill row carries (header comment)
     local slots = {}
     if mode == "flow" then
-      lil = math.min(spill_above, ab_end)
-      for i = 1, lil do slots[i] = g.lines[ab_end - lil + i] end
+      -- opts.ext: screen rows of the buffer lines above the table (nearest
+      -- last), concealed and redrawn while the cursor is on this row (WP-I
+      -- round 3), so the spill rows never fall back to "cell" near the top
+      local ne = opts.ext and #opts.ext or 0
+      lil = math.min(spill_above, ab_end + ne)
+      for i = 1, lil do
+        local j = ab_end + ne - lil + i
+        slots[i] = j <= ne and opts.ext[j] or g.lines[j - ne]
+      end
     elseif sepline then
       lil, slots[1] = 1, sepline
     end
@@ -692,7 +834,7 @@ function M.cursor_row(tbl, lay, r, k, opts)
     overlay(marks, 0, 0, slots[1])
     for i, b in ipairs(starts) do overlay(marks, b, 0, slots[i + 1]) end
   end
-  local NL = math.max(n + off, lr.lines)
+  local NL = math.max(n + off, lr.lines, nlmin or 0)
   local carry = sum(R, s0, ia - 1) - sum(V, s0, ia - 1) -- concealed part; the visible part is under the overlay
   local before1 = sum(V, s0, ia - 1) + vis_lead
   local extra, nav, spill_below, suffix_rows = {}, {}, 0, 0
@@ -755,8 +897,8 @@ function M.cursor_row(tbl, lay, r, k, opts)
         elseif mode == "flow" and below_from + fb <= #g.lines then
           fb = fb + 1
           ln = g.lines[below_from + fb - 1]
-        else
-          ln, blank_below = g.blank, blank_below + 1
+        else -- "flow": past the table's end, an empty row
+          ln, blank_below = mode == "flow" and g.empty or g.blank, blank_below + 1
         end
         overlay(marks, b, 0, ln)
         if rr > NL then spill_below = spill_below + 1 end
@@ -767,6 +909,11 @@ function M.cursor_row(tbl, lay, r, k, opts)
     end
   end
   local above = M.slice(g, 1, ab_end - lil)
+  if opts.ext and mode == "flow" then -- the copies above the table belong to the block above too
+    local ne = #opts.ext
+    above = {}
+    for j = 1, ne + ab_end - lil do above[j] = j <= ne and opts.ext[j] or g.lines[j - ne] end
+  end
   local below = concat_slice(g, extra, below_from + fb, #g.lines)
   -- screen rows of the line: spill above + real lines + concealed-suffix rows
   local rows = spill_above + n + suffix_rows
@@ -774,7 +921,7 @@ function M.cursor_row(tbl, lay, r, k, opts)
   local res = {
     marks = marks, extra = extra, above = above, below = below, rows = rows, segs = segs,
     spill_above = spill_above, spill_below = spill_below, used_sep = used_sep, k = k, n = n,
-    nav = nav, nextbar = bars[k + 1],
+    nav = nav, nextbar = bars[k + 1], nl = NL,
     -- the grid of the row: separator above it, its screen rows, its own extra
     -- lines, and the bottom border when it is the last row (scroll-to-fit)
     -- (the whole line counts, lines from below on its spill rows included:
@@ -796,6 +943,61 @@ function M.cursor_row(tbl, lay, r, k, opts)
   }
   g.proj[key] = res
   return res
+end
+
+-- Row-level values of cursor row r over all of its cells (WP-I: moving
+-- between the cells of a row moves nothing on screen, so whatever sizes the
+-- screen is decided per row, never per cell). Memoized per grid.
+-- { nl: grid lines of the row (cursor_row's nlmin for every cell),
+--   rows: the tallest line (the raw decision: a line taller than the window),
+--   lil: most grid lines from above drawn on the line,
+--   sep: 1 when a cell draws the separator in the block above (sepmin: 1
+--     when every cell does),
+--   depth: most screen rows from the row's first own grid line to the end of
+--     the line or of the row's grid (scroll-to-fit),
+--   hl: most screen rows of height - lines_in_line (sticky header rule),
+--   after: "flow", most screen rows of a line past the table's end,
+--   rl: most screen rows of the line below its lines from above (clip),
+--   header_in_line: a cell draws the delimiter on the line (header_all:
+--     every cell does),
+--   frame: screen rows the row needs so that every cell's line is on screen
+--     with G on one screen row: max(lil, sep) + depth (>= rows) }
+-- The row's first own grid line (G) is at the same screen row in every cell:
+-- the block above has #above + lines_in_line constant (clip keep per row).
+-- A "flow" row whose frame is taller than the window is drawn with the
+-- "cell" spill instead (init.lua), opts.fill: nl covers every cell's line
+-- (no blank spill row below the grid), so its frame is about its tallest
+-- line; taller than the window, it is drawn raw.
+function M.row_info(tbl, lay, r, opts)
+  local g = M.grid(tbl, lay, opts)
+  local mode = (opts.spill == "row" or opts.spill == "cell") and opts.spill or "flow"
+  local key = "R" .. r .. ":" .. mode .. (opts.fill and ":f" or "") .. (opts.ext and (":e" .. tostring(opts.ext)) or "")
+  local ri = g.proj[key]
+  if ri then return ri end
+  local cells = #tbl.rows[r].cells
+  local nl, rows, spill = lay.rows[r].lines, 0, 0
+  for k = 1, cells do
+    local c = M.cursor_row(tbl, lay, r, k, opts)
+    nl, rows, spill = math.max(nl, c.nl), math.max(rows, c.rows), math.max(spill, c.spill_above)
+    if opts.fill then nl = math.max(nl, c.rows - c.lines_in_line) end
+  end
+  ri = { nl = nl, rows = rows, lil = 0, sep = 0, depth = 0, hl = 0, rl = 0, after = 0, sepmin = 1, header_in_line = false, header_all = true }
+  for k = 1, cells do
+    local c = M.cursor_row(tbl, lay, r, k, opts, nl)
+    local lil = c.lines_in_line
+    ri.lil, ri.sep = math.max(ri.lil, lil), math.max(ri.sep, c.sep_above)
+    ri.depth = math.max(ri.depth, c.height - c.sep_above - lil)
+    ri.hl = math.max(ri.hl, c.height - lil)
+    ri.sepmin = math.min(ri.sepmin, c.sep_above)
+    if mode == "flow" then ri.after = math.max(ri.after, c.blank_below) end
+    ri.rl = math.max(ri.rl, c.rows - lil)
+    ri.header_in_line = ri.header_in_line or c.header_in_line
+    ri.header_all = ri.header_all and c.header_in_line and true or false
+  end
+  ri.frame = math.max(ri.lil, ri.sep) + ri.depth
+  ri.spill = spill -- most spill rows above the line (opts.ext: how many rows above the table it needs)
+  g.proj[key] = ri
+  return ri
 end
 
 return M

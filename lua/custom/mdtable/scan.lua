@@ -139,6 +139,7 @@ local CONCEAL_QUERY = [[
 (collapsed_reference_link ["[" "]"] @c)
 (shortcut_link ["[" "]"] @c)
 (entity_reference) @entity
+(backslash_escape) @esc
 ]]
 local ENTITIES = { ["&nbsp;"] = true, ["&lt;"] = true, ["&gt;"] = true, ["&amp;"] = true, ["&quot;"] = true,
   ["&ensp;"] = true, ["&emsp;"] = true }
@@ -159,7 +160,7 @@ local function conceals(parser, buf, rlo, rhi, want)
     if er < rlo or sr > rhi then return end
     if sr == er then
       local line = want[sr]
-      if not line or not line:sub(sc + 1, ec):find("[%*_`%[%]!&~]") then return end
+      if not line or not line:sub(sc + 1, ec):find("[%*_`%[%]!&~\\]") then return end
     end
     for id, node in q:iter_captures(root, buf, math.max(rlo, sr), math.min(rhi, er) + 1) do
       local r1, c1, r2, c2 = node:range()
@@ -167,6 +168,9 @@ local function conceals(parser, buf, rlo, rhi, want)
         and (q.captures[id] ~= "entity" or ENTITIES[vim.treesitter.get_node_text(node, buf)]) then
         local a = out[r1]
         if not a then a = {}; out[r1] = a end
+        -- a backslash escape conceals its backslash only (the highlight
+        -- query's #offset!), as Neovim draws it
+        if q.captures[id] == "esc" then c2 = c1 + 1 end
         a[#a + 1] = c1
         a[#a + 1] = c2
       end
