@@ -12,20 +12,10 @@ g.transparency = config.ui.transparency
 opt.laststatus = 3 -- global statusline
 opt.showmode = false
 
--- WSL2: pin to win32yank to avoid Neovim 0.12's OSC 52 clipboard timing out
+-- WSL2: win32yank through the interop bridge, async copy, bounded paste and
+-- OSC 52 while the bridge is down (see lua/custom/clipboard.lua)
 if vim.fn.has "wsl" == 1 then
-  g.clipboard = {
-    name = "win32yank",
-    copy = {
-      ["+"] = "win32yank.exe -i --crlf",
-      ["*"] = "win32yank.exe -i --crlf",
-    },
-    paste = {
-      ["+"] = "win32yank.exe -o --lf",
-      ["*"] = "win32yank.exe -o --lf",
-    },
-    cache_enabled = 0,
-  }
+  require("custom.clipboard").setup()
 elseif vim.fn.has "win32" == 0 then
   -- Native Windows autodetects the win32yank bundled with Neovim; OSC 52
   -- would hang on paste since Windows terminals don't answer OSC 52 queries
