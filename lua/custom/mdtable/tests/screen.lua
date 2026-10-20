@@ -45,6 +45,11 @@ function S.open(src, setup)
   return buf, win
 end
 
+-- WP-K: the logical cursor (the active row's line and column while the
+-- cursor is parked on the table's park line), 1-based line / 0-based col
+function _G.LL() local m = package.loaded["custom.mdtable"]; return m and m.logical_cursor and m.logical_cursor(0)[1] or vim.fn.line(".") end
+function _G.LC() local m = package.loaded["custom.mdtable"]; return m and m.logical_cursor and m.logical_cursor(0)[2] or vim.fn.col(".") - 1 end
+
 function S.keys(k, stay_insert)
   api.nvim_feedkeys(api.nvim_replace_termcodes(k, true, false, true), stay_insert and "xt!" or "xt", false)
   flush()

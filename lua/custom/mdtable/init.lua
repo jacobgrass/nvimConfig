@@ -373,13 +373,13 @@ end
 -- uniform scroll: the in-row offset first, then the view; third value: the
 -- rows left for the view, do_render shows that much more of the line's
 -- filler); otherwise a cell change changes highlights only.
-local function virtual_row(ws, win, buf, tbl, lay, r, k, popts, crow, W, h)
+local function virtual_row(ws, win, buf, tbl, lay, r, k, popts, crow, W, h, p)
   local vs = ws.vrow
   if not (vs and vs.lnum == crow and vs.W == W and vs.h == h and vs.buf == buf) then
     vs = { lnum = crow, W = W, h = h, buf = buf, off = 0, k = k }
   end
   local hint = vrow_hint(win, buf, crow, tbl.indent or 0)
-  local ok, tr = pcall(project.tall_row, tbl, lay, r, k, vs.off, popts, hint)
+  local ok, tr = pcall(project.tall_row, tbl, lay, r, k, vs.off, popts, hint, p)
   if not ok then note_error(tr); return nil end
   if tr.rows + 3 > h then return nil end
   local nofloat = tr.rows + 3 + header.height(buf, { g = tr.g, tbl = tbl }, h) > h
@@ -390,7 +390,7 @@ local function virtual_row(ws, win, buf, tbl, lay, r, k, popts, crow, W, h)
     if tr.first_t + math.max(nk, 1) - 1 < vs.vis_lo then
       local need = vs.vis_lo - tr.first_t
       rem, back = math.max(need - tr.off, 0), true
-      if tr.off > 0 then tr = project.tall_row(tbl, lay, r, k, tr.off - need, popts, hint) end
+      if tr.off > 0 then tr = project.tall_row(tbl, lay, r, k, tr.off - need, popts, hint, p) end
     end
   end
   vs.k, vs.off = k, tr.off
@@ -405,7 +405,7 @@ end
 -- screen / its first line is below the float.
 local function vrow_rooms(win, ws, vr, h)
   local tr, v = vr.proj, ws.view or api.nvim_win_call(win, vim.fn.winsaveview)
-  local A = vr.lnum
+  local A = vr.anchor or vr.lnum -- the line the row hangs on (WP-K: the park line)
   local fill = th(win, { start_row = A, end_row = A }).fill
   local t, tf = v.topline - 1, v.topfill
   local pre
@@ -421,17 +421,85 @@ local function vrow_rooms(win, ws, vr, h)
   vr.vis_hi = math.min(tr.s + tr.consumed - 1 + nb, tr.s + h - 1 - pre)
   vr.room_down = math.max(0, tr.last_t - vr.vis_hi)
   vr.room_up = math.max(0, vr.vis_lo - tr.first_t)
-  if ws.vrow and ws.vrow.lnum == A then ws.vrow.vis_lo = vr.vis_lo end
+  if ws.vrow and ws.vrow.lnum == vr.lnum then ws.vrow.vis_lo = vr.vis_lo end
 end
 
--- The raw fallback's note above the line is hidden: Neovim fitted the line
--- by hiding all of its filler after the render (the CursorMoved render then
--- renders in full, see do_render's view nudge).
-local function raw_note_pending(win, ws, crow, h)
-  local mt = ws.model and ws.model.tall
-  if not (mt and mt.note and not mt.anchor and mt.lnum == crow and mt.arows + 1 <= h) then return false end
-  local v = api.nvim_win_call(win, vim.fn.winsaveview)
-  return v.topline - 1 == crow and v.topfill == 0 and (v.skipcol or 0) == 0
+-- WP-K: the park line of tbl: the row index of its line with the fewest
+-- bytes, the delimiter row on a tie (padded tables: every line as long;
+-- the delimiter is never a navigation target, the header is).
+local function park_line(tbl)
+  local best, bn = 1, math.huge
+  for x, row in ipairs(tbl.rows) do
+    if #row.line < bn or (#row.line == bn and row.kind == "delim") then best, bn = x, #row.line end
+  end
+  return best
+end
+
+-- WP-K: park the cursor. When the cursor row would be a tall row (tall_of)
+-- or one whose bytes do not fit the window (its concealed line taller than
+-- the window), the real cursor moves to the table's park line and the row
+-- becomes the active row (ws.park: { tstart, plnum, p, lnum, r, k, col });
+-- the render draws it virtual on the park line's screen rows. Kept while
+-- the renders stay on the park line; any other cursor line ends it.
+-- Not in visual, insert or operator-pending mode of the current window (the
+-- row raw), for a jump's pre-render (opts.cursor) or once after unpark's
+-- hold (V). Returns the cursor line and column to render.
+local function park(ws, win, buf, crow, ccol, W, h, tick, seps, opts, jumped)
+  local sc = ws.scan
+  local tables = (sc and sc.tick == tick and crow >= sc.lo and crow < sc.hi) and sc.tables or scan.tables(buf, crow, crow + 1)
+  local tbl
+  for _, t in ipairs(tables) do if crow >= t.start_row and crow < t.end_row then tbl = t; break end end
+  -- (back in the buffer, :b#: the cursor returns to the park line it left on)
+  local rs = ws.resume
+  if rs and tbl and rs.tstart == tbl.start_row and rs.plnum == crow then ws.park, ws.crow, ws.resume = rs, crow, nil end
+  local pk = ws.park
+  -- (a jump whose target is the park line itself, or M.goto, ends the park)
+  if tbl and pk and pk.tstart == tbl.start_row and pk.plnum == crow and ws.crow == crow and not opts.cursor and jumped ~= crow then
+    local x = pk.lnum - tbl.start_row + 1
+    local ar = tbl.rows[x]
+    if pk.lnum < tbl.end_row and ar and ar.kind ~= "delim" and not ar.ragged and #ar.cells > 0 then
+      pk.r, pk.k = x, math.min(pk.k, #ar.cells)
+      -- (parked on its own line: the active cell follows the cursor's byte)
+      if pk.lnum == crow then pk.k, pk.col = project.cell_at(ar, ccol), ccol end
+      return crow, ccol
+    end
+  end
+  ws.park = nil
+  -- (unpark's hold: the row stays unparked, raw, until the mode it was
+  -- unparked for (visual, select, insert) is over)
+  local hold = ws.hold
+  if hold and hold.lnum == crow then
+    local other = api.nvim_get_mode().mode ~= "n"
+    if other then hold.seen = true end
+    if other or not hold.seen then return crow, ccol end
+  end
+  ws.hold = nil
+  if not tbl then return crow, ccol end
+  -- (a jump's pre-render, opts.cursor, draws the parked layout too, without
+  -- moving the real cursor: it is still at the jump's origin)
+  if not opts.cursor and win == api.nvim_get_current_win() and api.nvim_get_mode().mode ~= "n" then return crow, ccol end
+  local r = crow - tbl.start_row + 1
+  local row = tbl.rows[r]
+  if not row or row.kind == "delim" or row.ragged or #row.cells == 0 then return crow, ccol end
+  local lay = layout.cached(tbl, { width = W, separators = seps })
+  local sp = vim.g.mdtable_spill
+  local popts = { width = W, separators = seps, tabstop = vim.bo[buf].tabstop, spill = (sp == "row" or sp == "cell") and sp or "flow" }
+  local tall = tall_of(ws, buf, tbl, lay, r, popts, tables, W, h, tick)
+    or math.ceil(math.max(vim.fn.strdisplaywidth(row.line), 1) / W) + 3 > h
+  if not tall then return crow, ccol end
+  -- the park line: the row's own line when it fits concealed (WP-J's
+  -- layout: line('.') stays the row's line), else the table's shortest
+  -- line; that one must fit too, else the row raw
+  local function fits(x) return math.ceil(math.max(vim.fn.strdisplaywidth(tbl.rows[x].line), 1) / W) + 3 <= h end
+  local p = fits(r) and r or park_line(tbl)
+  if not fits(p) then return crow, ccol end
+  local plnum = tbl.start_row + p - 1
+  ws.park, ws.resume = { tstart = tbl.start_row, plnum = plnum, p = p, lnum = crow, r = r, k = project.cell_at(row, ccol), col = ccol }, nil
+  stats.parks = (stats.parks or 0) + 1
+  if plnum == crow then return crow, ccol end
+  if opts.cursor then return plnum, 0 end
+  api.nvim_win_call(win, function() vim.fn.cursor(plnum + 1, 1) end)
+  return plnum, 0
 end
 
 local function do_render(win, opts)
@@ -460,9 +528,11 @@ local function do_render(win, opts)
   -- render, put the cursor there and render it as the cursor row.
   local reclip = opts.reclip -- WinScrolled: same model, new view (draw only)
   local it = not opts.cursor and not reclip and ws.intent
+  local jumped -- (WP-K: the line a jump targeted)
   if it then
     ws.intent = nil
     local target = M._intent_target(win, it)
+    jumped = target and target[1]
     if target and target[1] ~= crow and it.tick == tick and ws.concealed and ws.concealed[target[1]] then
       api.nvim_win_call(win, function() vim.fn.cursor(target[1] + 1, target[2] + 1) end)
       cur = api.nvim_win_get_cursor(win)
@@ -471,18 +541,23 @@ local function do_render(win, opts)
     end
   end
   local seps = seps_for(buf)
+  local crow0 = crow -- (the line the cursor arrived on, before parking)
+  crow, ccol = park(ws, win, buf, crow, ccol, W, h, tick, seps, opts, jumped)
+  local pk = ws.park
   local top, bot = info.topline - 1, info.botline
   local nlines = api.nvim_buf_line_count(buf)
-  local key = table.concat({ tick, crow, ccol, W, h, tostring(seps) }, ":")
+  local key = table.concat({ tick, crow, ccol, W, h, tostring(seps), pk and (pk.lnum .. "/" .. pk.k) or "" }, ":")
   local sc = ws.scan
   local in_range = sc and sc.tick == tick and sc.lo <= math.min(top, crow) and sc.hi >= math.min(math.max(bot, crow + 1), nlines)
   local fsig = in_range and foreign_sig(buf, sc.lo, sc.hi)
   if in_range and fsig ~= sc.fsig then in_range = false; key = key .. ":f" .. fsig end
-  if not opts.force and not reclip and ws.key == key and in_range and not raw_note_pending(win, ws, crow, h) then
+  if not opts.force and not reclip and ws.key == key and in_range then
     -- same model: a pre-render (nofit) of a jump (G, :N, n) drew it without
     -- moving the view; apply the viewport plan here as any render does
     if not opts.nofit then ws.view = settle(win, ws, h, nil, true) end
     if ws.model and ws.model.vrow then vrow_rooms(win, ws, ws.model.vrow, h) end
+    -- (WP-K: e.g. a move inside a parked row's cell: nothing drawn)
+    stats.marks = { set = 0, updated = 0, deleted = 0, cursor = 0, untouched = 0, deleted_conceal = 0 }
     return
   end
   local t0 = uv.hrtime()
@@ -501,7 +576,7 @@ local function do_render(win, opts)
   -- it scroll for the wrong layout. Undo that scroll; the redraw that follows
   -- scrolls again (if needed) with the new marks, and fit() below applies.
   local prev = ws.view
-  if not reclip and prev and ws.crow ~= crow and ws.concealed and ws.concealed[crow] then
+  if not reclip and prev and ws.crow ~= crow0 and ws.concealed and ws.concealed[crow0] then
     local v = api.nvim_win_call(win, vim.fn.winsaveview)
     if v.topline ~= prev.topline or v.topfill ~= prev.topfill then
       api.nvim_win_call(win, function() vim.fn.winrestview({ topline = prev.topline, topfill = prev.topfill }) end)
@@ -535,7 +610,34 @@ local function do_render(win, opts)
     local min_keep, arows = 1, 1 -- arows: screen rows of the anchor line
     local ri -- project.row_info of the cursor row drawn as a grid
     local prose -- buffer lines above the table drawn on the cursor row's spill rows
-    if anc.inside then
+    if anc.inside and pk and pk.tstart == tbl.start_row and pk.plnum == crow and tbl.rows[pk.r] then
+      -- WP-K: parked. The cursor is on the park line (the anchor); the
+      -- active row pk.r is drawn virtual on its screen rows and in the
+      -- blocks around it (project.tall_row with the park line as the
+      -- covered line), the active cell highlighted
+      local ar, k = pk.r, pk.k
+      local tr, nofloat
+      tr, nofloat, vrem, vback = virtual_row(ws, win, buf, tbl, lay, ar, k, popts, pk.lnum, W, h, r)
+      if tr then
+        g = tr.g -- the highlighted grid: clips, markers and the header float use it
+        above, below, arows = tr.above, tr.below, tr.rows
+        cursor = { row = crow, sig = tostring(tr), marks = tr.marks }
+        local note = tr.from_t > (g.sep[ar] or g.first[ar]) and 1 or 0 -- the note above the row (vrow_hint)
+        model.vrow = { lnum = pk.lnum, anchor = crow, parked = true, tbl = tbl, lay = lay, r = ar, k = k, off = tr.off,
+          proj = tr, ri = project.row_info(tbl, lay, ar, popts), nofloat = nofloat, note = note == 1 }
+        -- scroll-to-fit: the row's grid from the park line's first screen
+        -- row (its separator) to its end (once per row: ws.fitted)
+        fitme = { lines_in_line = 0, sep_above = note,
+          height = note + (g.sep[ar] and 1 or 0) + g.count[ar] + (ar == #tbl.rows and 1 or 0), tall = true }
+        model.active = { lnum = pk.lnum, r = ar, k = k, tall = true, park = crow }
+        r, row = ar, tbl.rows[ar] -- (the sticky header follows the active row)
+      else
+        local cov = project.covered_row(tbl, lay, r, popts)
+        above, below, arows = cov.above, cov.below, cov.rows
+        cursor = { row = crow, sig = tostring(cov), marks = cov.marks }
+      end
+      entry.cursor = true
+    elseif anc.inside then
       if row.kind == "delim" then
         local cov = project.covered_row(tbl, lay, r, popts)
         above, below, arows = cov.above, cov.below, cov.rows
@@ -552,28 +654,12 @@ local function do_render(win, opts)
         -- celledit.lua edits it); raw only as a fallback, when its line
         -- (every byte concealed) does not fit the window or on an error
         local tall, rinfo, ropts, rprose, ext = tall_of(ws, buf, tbl, lay, r, popts, sc.tables, W, h, tick)
-        -- once raw, the line stays raw while the cursor stays on it at this
-        -- window size (review WP-E F2: gj/gk walk its screen rows)
-        local wt = ws.tall
-        local stuck = wt ~= nil and wt.lnum == crow and wt.W == W and wt.h == h
-        local tr, nofloat
-        if tall and not stuck then tr, nofloat, vrem, vback = virtual_row(ws, win, buf, tbl, lay, r, k, popts, crow, W, h) end
-        if tr then
-          g = tr.g -- the highlighted grid: clips, markers and the header float use it
-          above, below, arows = tr.above, tr.below, tr.rows
-          cursor = { row = crow, sig = tostring(tr), marks = tr.marks }
-          model.vrow = { lnum = crow, tbl = tbl, lay = lay, r = r, k = k, off = tr.off, proj = tr, ri = rinfo, nofloat = nofloat,
-            note = tr.from_t > (g.sep[r] or g.first[r]) }
-          -- scroll-to-fit: the row's grid from the line's first screen row
-          -- (its separator) to its end; taller than the window, so the fit
-          -- seats its top under the float (once per row: ws.fitted)
-          local note = tr.from_t > (g.sep[r] or g.first[r]) and 1 or 0 -- the note above the row (vrow_hint)
-          fitme = { lines_in_line = 0, sep_above = note, height = note + (g.sep[r] and 1 or 0) + g.count[r] + (r == #tbl.rows and 1 or 0),
-            tall = true }
-        elseif tall or stuck then
-          -- the fallback: the line raw (Neovim would show the lower part of a
-          -- line taller than the window with w_skipcol and "@@@"), the other
-          -- rows virtual
+        if tall or math.ceil(math.max(vim.fn.strdisplaywidth(row.line), 1) / W) + 3 > h then
+          -- WP-K: a tall row is parked (park(): the cursor on the table's
+          -- park line, the row virtual). Here only when parking does not
+          -- apply: visual, insert or operator-pending mode in this window,
+          -- a jump's pre-render, V's hold. The line raw, the other rows
+          -- virtual
           above = project.slice(g, 1, g.first[r] - 1)
           below = project.slice(g, g.first[r] + g.count[r], #g.lines)
           arows = math.ceil(math.max(vim.fn.strdisplaywidth(row.line), 1) / W)
@@ -593,15 +679,24 @@ local function do_render(win, opts)
           fitme, fitri, ri = cr, rinfo, rinfo
           min_keep, arows = #cr.extra + 1, cr.rows
         end
-        model.active = { lnum = crow, r = r, k = k, tall = tr ~= nil }
+        model.active = { lnum = crow, r = r, k = k, tall = false }
       end
       entry.cursor = true
     else
       local cov = anc.below and project.covered_tail(tbl, lay, popts) or project.covered_row(tbl, lay, 1, popts)
+      if cov.rows > h - 2 then
+        -- WP-K: the table's first / last line is too long to cover (its
+        -- concealed bytes fill the window): the table hangs on its park line
+        -- instead when that one is short (a delimiter row of a few screen
+        -- rows; e.g. o on a huge last row puts the cursor below the table)
+        local p = park_line(tbl)
+        local pc = project.covered_row(tbl, lay, p, popts)
+        if pc.rows <= 3 then anc.anchor, cov = tbl.start_row + p - 1, pc end
+      end
       above, below, arows = cov.above, cov.below, cov.rows
       if cov.rows > h then
         -- the anchor line drawn as its row is taller than the window (very
-        -- narrow windows): raw, as a tall cursor row (Neovim's "@@@")
+        -- narrow windows, padded tables): raw, as before (Neovim's "@@@")
         local x = anc.below and #tbl.rows or 1
         above = project.slice(g, 1, g.first[x] - 1)
         below = project.slice(g, g.first[x] + g.count[x], #g.lines)
@@ -659,14 +754,6 @@ local function do_render(win, opts)
       hctx = { g = g, tbl = tbl, A = anc.anchor, r = r, above = above, clipped = clip_a,
         lil = model.cursor and model.cursor.tbl == tbl and model.cursor.proj.lines_in_line or 0, ri = ri,
         tall = model.vrow ~= nil and model.vrow.tbl == tbl or nil }
-    end
-    if anc.inside and model.tall and model.tall.lnum == crow and not model.tall.anchor
-        and vim.g.mdtable_cell_editor ~= false and vim.g.mdtable_tall_hint ~= false then
-      -- the raw fallback (a line taller than the window): the same note
-      -- right above it on every visit (i opens the float there too); after
-      -- hctx: the sticky header's room is the grid lines
-      above = vim.list_extend(vim.list_slice(above), { vrow_note(tbl.indent or 0) })
-      model.tall.note = true
     end
     if #above > 0 then
       marks[#marks + 1] = { key = "a" .. tbl.start_row, row = anc.anchor, kind = "vl", above = true, lines = above,
@@ -740,7 +827,8 @@ local function do_render(win, opts)
   end
   ws.hctx = hctx
   -- fitted once per row (WP-I: the fit holds for every cell of the row)
-  ws.fit = fitme and { crow = crow, cr = fitme, ri = fitri, key = tick .. ":" .. crow .. ":" .. W .. ":" .. h } or nil
+  ws.fit = fitme and { crow = crow, cr = fitme, ri = fitri,
+    key = tick .. ":" .. crow .. ":" .. W .. ":" .. h .. ":" .. (model.vrow and model.vrow.lnum or "") } or nil
   if not opts.nofit and reanchor(win, ws, moved, view) then view = api.nvim_win_call(win, vim.fn.winsaveview) end
   ws.concealed, ws.crow = concealed, crow
   local v0 = view
@@ -750,15 +838,6 @@ local function do_render(win, opts)
   if #bfix > 0 and (ws.view.topline ~= v0.topline or ws.view.topfill ~= v0.topfill) then
     rebudget(ws.view)
     ws.bkeep = nkeep
-  end
-  local mt = model.tall
-  if mt and mt.note and not mt.anchor and not reclip and mt.lnum == crow and mt.arows + 1 <= h
-      and ws.view.topline - 1 == crow and ws.view.topfill == 0 and (ws.view.skipcol or 0) == 0 then
-    -- the raw fallback's note: Neovim fits the line by hiding all of its
-    -- filler; the line and the note fit, so show the note (one filler row)
-    api.nvim_win_call(win, function() vim.fn.winrestview({ topline = crow + 1, topfill = 1 }) end)
-    ws.view = settle(win, ws, h, nil, false)
-    if #bfix > 0 then rebudget(ws.view); ws.bkeep = nkeep end
   end
   if model.vrow then
     vrow_rooms(win, ws, model.vrow, h)
@@ -924,7 +1003,7 @@ function M.tall_scroll(win, dir, n)
   if not (vr and ws.vrow and ws.vrow.lnum == vr.lnum and vr.room_down) then return 0 end
   local need = math.min(n, dir > 0 and vr.room_down or vr.room_up)
   if need <= 0 then return 0 end
-  local A, off, done = vr.lnum, ws.vrow.off, 0
+  local A, off, done = vr.anchor or vr.lnum, ws.vrow.off, 0
   local v = api.nvim_win_call(win, vim.fn.winsaveview)
   local nv = { topline = v.topline, topfill = v.topfill }
   local function fill(l) return th(win, { start_row = l, end_row = l }).fill end
@@ -958,8 +1037,46 @@ function M.tall_scroll(win, dir, n)
   return math.min(done, need)
 end
 
--- Move the cursor of win to (lnum, col) (0-based) and render right away.
+-- WP-K: the park state of win while its cursor is parked, else nil.
+function M.park_of(win)
+  win = (win == nil or win == 0) and api.nvim_get_current_win() or win
+  local st = state[api.nvim_win_get_buf(win)]
+  local ws = st and st.wins[win]
+  local pk = ws and ws.park
+  if not pk or ws.crow ~= pk.plnum or api.nvim_win_get_cursor(win)[1] - 1 ~= pk.plnum then return nil end
+  return pk
+end
+
+-- WP-K: the cursor mdtable works with, { line (1-based), byte col }: the
+-- active row's line and column while parked (line('.') is then the park
+-- line), else the real cursor.
+function M.logical_cursor(win)
+  local pk = M.park_of(win)
+  if pk then return { pk.lnum + 1, pk.col } end
+  return api.nvim_win_get_cursor((win == nil or win == 0) and api.nvim_get_current_win() or win)
+end
+
+-- WP-K: move the real cursor of win onto the active row's line (nav.lua:
+-- o/O, dd/yy/p, V); hold: the next render does not park it again (V: the
+-- row is raw while visual is active). Returns the park state or nil.
+function M.unpark(win, hold)
+  win = (win == nil or win == 0) and api.nvim_get_current_win() or win
+  local pk = M.park_of(win)
+  if not pk then return nil end
+  local ws = state[api.nvim_win_get_buf(win)].wins[win]
+  -- (hold "cmd": the Ex command line, no render in between; the next render
+  -- in normal mode on that line parks again)
+  ws.park, ws.hold = nil, hold and { lnum = pk.lnum, seen = hold == "cmd" or nil } or nil
+  api.nvim_win_call(win, function() vim.fn.cursor(pk.lnum + 1, pk.col + 1) end)
+  return pk
+end
+
+-- Move the cursor of win to (lnum, col) (0-based) and render right away
+-- (WP-K: an explicit move ends a park: the target line decides).
 function M.goto(win, lnum, col)
+  local st = state[api.nvim_win_get_buf(win)]
+  local ws = st and st.wins[win]
+  if ws then ws.park = nil end
   api.nvim_win_call(win, function() vim.fn.cursor(lnum + 1, col + 1) end)
   M.render(win)
 end
@@ -982,7 +1099,13 @@ function M.attach(buf)
     group = g, buffer = buf, callback = function() render_buf(buf) end,
   })
   api.nvim_create_autocmd({ "BufWipeout", "BufDelete" }, { group = g, buffer = buf, callback = function() M.detach(buf) end })
-  api.nvim_create_autocmd("BufWinLeave", { group = g, buffer = buf, callback = function() vim.schedule(header.prune) end })
+  -- (WP-K review: leaving the buffer keeps a window's park state: its last
+  -- cursor is the park line, so coming back (:b#) resumes the active row)
+  api.nvim_create_autocmd("BufWinLeave", { group = g, buffer = buf, callback = function()
+    local ws = state[buf] and state[buf].wins[api.nvim_get_current_win()]
+    if ws and ws.park then ws.resume = ws.park end
+    vim.schedule(header.prune)
+  end })
   -- option check once the user is idle: render-markdown sets its window
   -- options after the first render, so checking at attach warns falsely
   api.nvim_create_autocmd("CursorHold", { group = g, buffer = buf, once = true, callback = function()
@@ -1020,6 +1143,8 @@ end
 
 function M.toggle(on)
   if on == nil then on = not enabled end
+  -- (WP-K review: disabling leaves every parked cursor on its active row)
+  if not on then for _, w in ipairs(api.nvim_list_wins()) do pcall(M.unpark, w) end end
   enabled = on
   local ce = package.loaded["custom.mdtable.celledit"]
   if not on and ce then ce.close_all() end
@@ -1069,6 +1194,7 @@ function M.active_lines()
   if a then
     at = ("row %d, cell %d (line %d)"):format(a.r, a.k, a.lnum + 1)
     if a.tall and m.vrow then at = at .. (", virtual row, in-row scroll %d"):format(m.vrow.off) end
+    if a.park then at = at .. (", cursor parked on line %d"):format(a.park + 1) end
   end
   return { ("MdTable active cell: %s; tall rows: %d of %d rows in %d rendered table%s (window %dx%d)"):format(at, ntall, nrows,
     #m.tables, #m.tables == 1 and "" or "s", d.width, d.height) }
@@ -1107,6 +1233,15 @@ api.nvim_create_autocmd("WinResized", {
     end
   end,
 })
+-- WP-K: leaving visual mode on a row unparked for V parks it again (the
+-- cursor did not move: no CursorMoved)
+-- (visual / select in or out, insert / replace out: not the cmdline, whose
+-- render would consume a jump's intent before the jump runs)
+api.nvim_create_autocmd("ModeChanged", { group = ag, pattern = { "[vV\22sS\19]*:*", "*:[vV\22sS\19]*", "i*:*", "R*:*" }, callback = function()
+  local st = state[api.nvim_get_current_buf()]
+  local ws = st and st.wins[api.nvim_get_current_win()]
+  if ws and (ws.hold or ws.park) then M.render(api.nvim_get_current_win()) end
+end })
 -- WinScrolled: no relayout; render only when the view left the scanned range.
 -- What WinScrolled does for one window (also called by tests/probe_vjitter.lua:
 -- a probe running inside one Lua call never returns to the main loop, where
@@ -1153,6 +1288,10 @@ api.nvim_create_autocmd("WinScrolled", {
 -- :N, :$, /pat, ?pat: record the jump's target as an intent.
 local cmd_origin
 api.nvim_create_autocmd("CmdlineEnter", { group = ag, callback = function()
+  -- WP-K: an Ex command's default range (.) addresses the active row, not
+  -- the park line: un-park onto it; the render after the command parks again
+  -- unless the command moved the cursor elsewhere
+  if vim.v.event.cmdtype == ":" and state[api.nvim_get_current_buf()] and M.park_of(0) then M.unpark(0, "cmd") end
   local c = api.nvim_win_get_cursor(0)
   cmd_origin = { c[1] - 1, c[2] }
 end })

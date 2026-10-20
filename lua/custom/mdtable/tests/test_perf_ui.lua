@@ -167,6 +167,8 @@ H.run("WinScrolled re-clip CPU < 0.5 ms median (draw only, 60-row table at 120x4
   H.ok(r.med < 0.5, "re-clip CPU median " .. r.med)
   H.eq(0, r.renders, "re-clips are not renders")
   H.ok(worst <= 2, "never more than 2 re-clips per scroll key: " .. worst)
+  -- (WP-I review minor: every scroll key that moved the view re-clipped)
+  H.eq(0, none_moved, "scroll keys that moved the view without a re-clip")
 end)
 
 H.run("editor delta (enabled - disabled), median of 30, best of 3: j < 1.5 ms, insert keystroke < 3 ms", function()

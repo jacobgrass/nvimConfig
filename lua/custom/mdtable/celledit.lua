@@ -142,7 +142,9 @@ function C.cell_under_cursor(win)
   win = (win == nil or win == 0) and api.nvim_get_current_win() or win
   local buf = api.nvim_win_get_buf(win)
   if vim.b[buf].mdtable_celledit then return nil end
-  local cur = api.nvim_win_get_cursor(win)
+  -- (WP-K: while parked, the active row's line and cell)
+  local m = package.loaded["custom.mdtable"]
+  local cur = (m and m.logical_cursor) and m.logical_cursor(win) or api.nvim_win_get_cursor(win)
   local lnum, col = cur[1] - 1, cur[2]
   local tbl, r = locate(buf, lnum)
   if not tbl then return nil end
@@ -226,7 +228,9 @@ local function retarget(pwin, lnum, k, opts)
   vim.wo[S.win].conceallevel = vim.wo[pwin].conceallevel
   place()
   -- the parent's cursor on the edited cell: the background shows its row
-  api.nvim_win_set_cursor(pwin, { lnum + 1, c.cell.s })
+  -- (cursor(): nvim_win_set_cursor validates against the old marks at once,
+  -- and the row's line is concealed while parked; the render parks again)
+  api.nvim_win_call(pwin, function() vim.fn.cursor(lnum + 1, c.cell.s + 1) end)
   rerender(pwin)
   watch()
   -- the float's cursor: opts.col is a byte offset in the escaped cell text
@@ -357,7 +361,7 @@ function C.apply()
     local pbuf, lnum = S.pbuf, S.lnum
     local function set()
       undo_break(pbuf)
-      if api.nvim_get_current_buf() == pbuf then api.nvim_win_set_cursor(0, { lnum + 1, s }) end
+      if api.nvim_get_current_buf() == pbuf then vim.fn.cursor(lnum + 1, s + 1) end
       api.nvim_buf_set_text(pbuf, lnum, s, lnum, e, { ins })
     end
     if api.nvim_win_is_valid(S.pwin) and api.nvim_win_get_buf(S.pwin) == pbuf then api.nvim_win_call(S.pwin, set) else set() end

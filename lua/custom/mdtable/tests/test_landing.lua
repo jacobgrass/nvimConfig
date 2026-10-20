@@ -94,7 +94,7 @@ local ORACLE = [[
     -- cursor's cell, then the same cell of the next/previous rows, then
     -- buffer lines past the table
     local n, dir = tonumber(k:match("^(%d+)")) or 1, k:sub(-1) == "j" and 1 or -1
-    local l, col = vim.fn.line(".") - 1, vim.fn.col(".") - 1
+    local l, col = LL() - 1, LC()
     local m = M._last_model(0)
     for _, e in ipairs(m.tables) do
       local t = e.tbl
@@ -140,13 +140,13 @@ local ORACLE = [[
   if k == "N" then return sp(vim.fn.getreg("/"), fwd and "bnw" or "nw") end
   local v = vim.fn.winsaveview()
   vim.cmd("normal! " .. vim.api.nvim_replace_termcodes(k, true, false, true))
-  local l = vim.fn.line(".")
+  local l = LL()
   vim.fn.winrestview(v)
   return l
 ]]
 
 local CHECK = [[
-  local l = vim.fn.line(".")
+  local l = LL()
   local m = M._last_model(0)
   local row
   for _, e in ipairs(m and m.tables or {}) do
@@ -162,7 +162,7 @@ local CHECK = [[
   -- it: the cursor on the row's covered line (on screen), no real cell
   local virt = m and m.vrow and m.vrow.lnum == l - 1 and true or false
   if virt then real = false end
-  local sp = vim.fn.screenpos(0, l, vim.fn.col("."))
+  local sp = vim.fn.screenpos(0, vim.fn.line("."), vim.fn.col(".")) -- (the real cursor: the park line while parked)
   local rows = S.screen()
   local errs, blocks = S.check(rows, 2)
   if raw and sp.row <= 0 then errs[#errs + 1] = "raw cursor row off screen" end
@@ -332,7 +332,7 @@ local function e1(name, W, Hh, intent)
           local room = rk.virt and c.lua("local m = M._last_model(0); return m.vrow and m.vrow.room_down or 0") or 1
           if room > 0 then at(label .. " (raw row: walks its screen rows)", key, 14) end
           local n = 0
-          while c.lua("return vim.fn.line('.')") == 14 and n < 80 do c.request("nvim_input", key); c.request("nvim_eval", "1"); n = n + 1 end
+          while c.lua("return LL()") == 14 and n < 80 do c.request("nvim_input", key); c.request("nvim_eval", "1"); n = n + 1 end
           at(label .. " (raw row: past its last screen row)", nil, 15)
         else
           at(label, key, 15, { go = { 13, 1 } })
@@ -345,7 +345,7 @@ local function e1(name, W, Hh, intent)
       -- (WP-J: a virtual (tall) row: j scrolls it, then the next row)
       if rj.raw or rj.virt then -- WP-I round 3: row 1 raw at this size: j walks its screen rows, then the next row
         local n = 0
-        while c.lua("return vim.fn.line('.')") == 10 and n < 80 do c.request("nvim_input", "j"); c.request("nvim_eval", "1"); n = n + 1 end
+        while c.lua("return LL()") == 10 and n < 80 do c.request("nvim_input", "j"); c.request("nvim_eval", "1"); n = n + 1 end
         at("j again: past the raw row's screen rows, the next row", nil, 11)
       else
         at("j again: the next row", "j", 11)
@@ -355,7 +355,7 @@ local function e1(name, W, Hh, intent)
       local r1 = at("row 1 cell 3", nil, 10, { go = { 9, 3 } })
       if r1.raw or r1.virt then -- WP-I round 3: row 1 raw (its frame is taller than the window): j walks its screen rows
         local n = 0
-        while c.lua("return vim.fn.line('.')") == 10 and n < 80 do c.request("nvim_input", "j"); c.request("nvim_eval", "1"); n = n + 1 end
+        while c.lua("return LL()") == 10 and n < 80 do c.request("nvim_input", "j"); c.request("nvim_eval", "1"); n = n + 1 end
         at("j past the raw row's last screen row: next row", nil, 11)
       else
         local n = cells()
@@ -383,12 +383,12 @@ local function e1(name, W, Hh, intent)
       -- the landing screen row when it is shorter
       -- (WP-J: on a virtual row the drawn column is the active cell's grid column)
       local WC = [[local m = M._last_model(0); local wc = vim.fn.wincol()
-        if m.vrow and m.vrow.lnum == vim.fn.line(".") - 1 then
+        if m.vrow and m.vrow.lnum == LL() - 1 then
           for _, x in ipairs(m.tables) do
             if x.tbl == m.vrow.tbl then wc = vim.fn.getwininfo(vim.api.nvim_get_current_win())[1].textoff + M.grid(x).left[m.vrow.k] + 1 end
           end
         end
-        return { wc, vim.fn.col("."), vim.fn.col("$") - 1, vim.fn.line(".") }]]
+        return { wc, vim.fn.col("."), vim.fn.col("$") - 1, LL() }]]
       for _, k in ipairs({ 2, 3, 5 }) do
         for _, ex in ipairs({ { 13, "<C-j>", 15 }, { 13, "j", 15 }, { 7, "<C-k>", 7 }, { 7, "k", 7 } }) do
           local label = ("column: %s from %s cell %d"):format(ex[2], ex[1] == 13 and "the last row" or "the header", k)
@@ -416,7 +416,7 @@ local function e1(name, W, Hh, intent)
       local rb = c.lua(CHECK)
       if rb.raw or rb.virt then -- WP-I: the raw last row is walked by screen rows first (WP-J: a virtual one scrolled)
         local n = 0
-        while c.lua("return vim.fn.line('.')") == 14 and n < 80 do c.request("nvim_input", "j"); c.request("nvim_eval", "1"); n = n + 1 end
+        while c.lua("return LL()") == 14 and n < 80 do c.request("nvim_input", "j"); c.request("nvim_eval", "1"); n = n + 1 end
         at("option back on: j exits (after the raw row's screen rows)", nil, 15)
       else
         at("option back on: j exits", "j", 15, { go = { 13, 1 } })
@@ -454,7 +454,7 @@ local VIS = [=[
       end
     end
   end
-  local l, cl = vim.fn.line(".") - 1, vim.fn.col(".") - 1
+  local l, cl = LL() - 1, LC()
   local k
   for _, e in ipairs(M._last_model(0).tables) do
     if l >= e.tbl.start_row and l < e.tbl.end_row then
@@ -563,6 +563,8 @@ for _, size in ipairs({ { 120, 45 }, { 100, 42 }, { 100, 30 } }) do
     local tag = ("%dx%d intent %s"):format(W, Hh, intent and "on" or "off")
     scenario("needs.md " .. tag, W, Hh, intent, "needs.md", steps_file({ "Impossibly", "Sagg-acwrite" }, { 10, 12, 14 }))
     scenario("ledger.md " .. tag, W, Hh, intent, "ledger.md", steps_file({ "GM5", "Ignores" }, { 12, 20, 30 }))
+    -- WP-K: rows whose bytes do not fit the window: parked on the delimiter
+    scenario("huge.md " .. tag, W, Hh, intent, "huge.md", steps_file({ "overlay", "anchor" }, { 8, 10, 12 }))
     for _, lay in ipairs({ { 1 }, { 30 }, { 1, true } }) do
       local tail, short = lay[1], lay[2]
       for _, f in ipairs({ 0.5, 1.1, 1.5, 2, 4 }) do

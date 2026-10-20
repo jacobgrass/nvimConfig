@@ -27,6 +27,10 @@
 -- j/k scroll the row by one screen row (core.tall_scroll; a count: rows)
 -- and leave it at its ends like j/k past a cell's last/first grid line;
 -- <C-d>/<C-u>/<C-f>/<C-b> scroll it by their amount, then leave it.
+-- WP-K: every tall row is parked: the real cursor sits on the table's park
+-- line (core.park_of), all keys here work on the active row and cell
+-- (core.logical_cursor); o/O, dd, yy, p and V act on the active row's line
+-- (N.row_op).
 -- i, I, s, c (insert at the text's start), a, A (at its end) and <CR>
 -- and x (normal mode: hidden text is never deleted blindly) open the cell
 -- editor on the active cell (celledit.lua).
@@ -233,7 +237,7 @@ function N.run(i, count)
   local win = api.nvim_get_current_win()
   local m = short_mode()
   local model = core.model(win) -- renders first when the buffer or cursor changed
-  local cur = api.nvim_win_get_cursor(win)
+  local cur = core.logical_cursor(win) -- (WP-K: the active row's line while parked)
   local lnum, col = cur[1] - 1, cur[2]
   local e, r = table_at(model, lnum)
   if not e then
@@ -478,14 +482,14 @@ function N.scroll(lhs, count)
   local function rows(l) return math.max(th(win, { start_row = l, end_row = l, start_vcol = 0 }).all, 1) end
   local starts, ends = {}, {}
   for _, e in ipairs(model.tables) do starts[e.tbl.start_row], ends[e.tbl.end_row - 1] = e, e end
-  local cur = api.nvim_win_get_cursor(win)
+  local cur = core.logical_cursor(win) -- (WP-K: the active row's line while parked)
   local lnum, col = cur[1] - 1, cur[2]
   local wl = vim.fn.winline()
   if model.vrow and model.vrow.lnum == lnum then
     -- WP-J: a virtual cursor row scrolls by the amount; at its end the
     -- move goes on to the next/previous row (j/k past the end)
     if core.tall_scroll(win, dir, amount) == 0 then N.run(dir == 1 and 3 or 4, 0) end
-    local c2 = api.nvim_win_get_cursor(win)
+    local c2 = core.logical_cursor(win)
     N.last_scroll, want[win] = { c2[1], c2[2] }, nil
     return
   end
@@ -643,10 +647,16 @@ end
 -- (vim.g.mdtable_cell_editor = false: the keys as elsewhere). A row drawn
 -- raw (the fallback) keeps i/a/I/A at the cursor's offset in its cell.
 local function edit_expr(buf, lhs)
-  if vim.g.mdtable_cell_editor == false or not core.attached(buf) then return pass(lhs) end
+  if not core.attached(buf) then return pass(lhs) end
   local win = api.nvim_get_current_win()
+  if vim.g.mdtable_cell_editor == false then
+    -- (WP-K: parked, the builtin key edits the active row's own line, raw
+    -- while editing; never the park line)
+    if core.park_of(win) and #lhs == 1 then return "<Cmd>lua require('custom.mdtable').unpark(0, true)<CR>" .. lhs end
+    return pass(lhs)
+  end
   local model = core._last_model(win)
-  local lnum = api.nvim_win_get_cursor(win)[1] - 1
+  local lnum = core.logical_cursor(win)[1] - 1
   if not (model and model.tick == api.nvim_buf_get_changedtick(buf)) then return pass(lhs) end
   if model.vrow and model.vrow.lnum == lnum then
     local ins = EDIT[lhs]
@@ -658,7 +668,76 @@ local function edit_expr(buf, lhs)
   return pass(lhs)
 end
 
+-- WP-K: o/O, dd, yy, p and V on a parked state act on the active row's
+-- line, not the park line: the real cursor goes to that line first
+-- (core.unpark), then the builtin runs there (a count kept); o/O then edit
+-- the new line (un-parked), dd/yy/p re-render (the cursor's new line parks
+-- again when it is tall), V selects the row's line (raw while visual is
+-- active: the hold).
+N.ROW_KEYS = { "o", "O", "dd", "yy", "Y", "p", "P", "]p", "[p", "]P", "[P", "zp", "zP", "V", "v", "<C-v>", "gv", "gh", "gH" }
+local VISUAL = { V = true, v = true, ["<C-v>"] = true, gv = true, gh = true, gH = true }
+local RDESC = "mdtable: row keys on a parked (tall) row"
+local function row_expr(buf, lhs)
+  if not core.attached(buf) or not core.park_of(api.nvim_get_current_win()) then return lhs end
+  return ("<Cmd>lua require('custom.mdtable.nav').row_op(%q, %d, %q)<CR>"):format(lhs, vim.v.count, vim.v.register)
+end
+
+-- WP-K review: on a parked row no key edits the park line (the line under
+-- the real cursor). Keys that edit the cursor line: C, S, D, r, R, X open
+-- the cell editor on the active cell and run there; J, >>, <<, ==, ~, guu,
+-- gUU, g~~, gJ act on the active row's line (N.row_op); the bare operators
+-- (d, gu, gU, g~, >, <, =, g?), . (repeat), & and <C-a>/<C-x>, gp/gP are
+-- a no-op with a notice. Macros replay through these maps.
+-- (audited against :help normal-index: every key that changes or yanks the
+-- cursor line is in one of the lists below or in ROW_KEYS / EDIT_KEYS;
+-- passed through on purpose: u, U, <C-r>, q, @{reg} (replays through these
+-- maps), motions, and Ex commands, whose ranges address the park line)
+N.PARK_FLOAT = { "C", "S", "D", "r", "R", "X", "gI", "gi", "gr", "gR", "<Del>", "<Insert>" }
+N.PARK_ROW = { "J", "gJ", ">>", "<<", "==", "~", "guu", "gugu", "gUU", "gUgU", "g~~", "g~g~", "g??", "g?g?" }
+N.PARK_BLOCK = { ".", "@:", "d", "y", "gu", "gU", "g~", "g?", ">", "<", "=", "!", "!!", "&", "g&", "<C-a>", "<C-x>",
+  "gp", "gP", "gq", "gqq", "gqgq", "gw", "gww", "gwgw", "zy", "zf", "zF", "gc", "gcc" }
+local function park_expr(buf, lhs, kind)
+  if not core.attached(buf) or not core.park_of(api.nvim_get_current_win()) then return lhs end
+  if kind == "float" then return "<Cmd>lua require('custom.mdtable.celledit').open_at_cursor({})<CR>" .. lhs end
+  if kind == "row" then return ("<Cmd>lua require('custom.mdtable.nav').row_op(%q, %d, %q)<CR>"):format(lhs, vim.v.count, vim.v.register) end
+  return "<Cmd>lua vim.notify('parked row: edit in the float', vim.log.levels.WARN)<CR>"
+end
+
+function N.row_op(lhs, count, reg)
+  local win = api.nvim_get_current_win()
+  local c = count > 0 and tostring(count) or ""
+  local tc = api.nvim_replace_termcodes(lhs, true, false, true)
+  local pk = core.unpark(win, VISUAL[lhs] ~= nil)
+  -- (inserted ahead of keys already typed: "vd" runs v first)
+  if not pk then return api.nvim_feedkeys(c .. tc, "ni", false) end
+  if VISUAL[lhs] then return api.nvim_feedkeys(c .. tc, "ni", false) end
+  if lhs == "o" or lhs == "O" then
+    -- (the new line set directly: `normal! o` runs the insert-mode autocmds
+    -- inside :normal, and the cursor ended a line too low there)
+    local buf = api.nvim_win_get_buf(win)
+    local ind = (api.nvim_buf_get_lines(buf, pk.lnum, pk.lnum + 1, false)[1] or ""):match("^%s*")
+    local at = lhs == "o" and pk.lnum + 1 or pk.lnum
+    api.nvim_buf_set_lines(buf, at, at, false, { ind })
+    vim.fn.cursor(at + 1, #ind + 1)
+    core.render(win) -- (the marks for the new line before insert mode: a stale conceal moved the cursor)
+    vim.cmd("startinsert!")
+    return
+  end
+  -- (the typed register kept: "ap pastes register a)
+  local r = (reg and reg ~= "" and reg ~= '"') and ('"' .. reg) or ""
+  vim.cmd("normal! " .. r .. c .. tc)
+  core.render(win)
+end
+
 function N.map(buf)
+  for _, lhs in ipairs(N.ROW_KEYS) do
+    vim.keymap.set("n", lhs, function() return row_expr(buf, lhs) end, { buffer = buf, expr = true, desc = RDESC })
+  end
+  for kind, list in pairs({ float = N.PARK_FLOAT, row = N.PARK_ROW, block = N.PARK_BLOCK }) do
+    for _, lhs in ipairs(list) do
+      vim.keymap.set("n", lhs, function() return park_expr(buf, lhs, kind) end, { buffer = buf, expr = true, desc = RDESC })
+    end
+  end
   for _, lhs in ipairs(N.EDIT_KEYS) do
     vim.keymap.set("n", lhs, function() return edit_expr(buf, lhs) end, { buffer = buf, expr = true, desc = EDESC })
   end
@@ -689,7 +768,7 @@ end
 function N.unmap(buf)
   for _, m in ipairs({ "n", "x", "i" }) do
     for _, d in ipairs(api.nvim_buf_get_keymap(buf, m)) do
-      if d.desc == DESC or d.desc == LDESC or d.desc == EDESC then pcall(vim.keymap.del, m, d.lhs, { buffer = buf }) end
+      if d.desc == DESC or d.desc == LDESC or d.desc == EDESC or d.desc == RDESC then pcall(vim.keymap.del, m, d.lhs, { buffer = buf }) end
     end
   end
 end

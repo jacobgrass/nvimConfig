@@ -366,7 +366,7 @@ local function jumps(t, steps, label)
   for _, k in ipairs(steps) do
     local want = t.lua(EXPECT, k)
     t.input(k)
-    local got = t.lua("return vim.fn.line('.')")
+    local got = t.lua("return LL()")
     if want > 0 then H.eq(want, got, label .. ": line after " .. k) end
     t.aligned(label .. " after " .. k, 2, nil, true)
   end
@@ -384,7 +384,7 @@ for _, size in ipairs({ { 120, 45, { 12, 16, 20, 24 } }, { 100, 30, { 6, 8, 10, 
     t.open("needs.md")
     jumps(t, { "gg", ":12<CR>", "gg", "/Impossibly<CR>", "gg", "?Sagg-acwrite<CR>", "n", "N", "gg", "G", ":3<CR>", ":14<CR>", ":1<CR>", ":$<CR>" }, "needs")
     t.input("gg"); t.input("G"); t.input("k")
-    local l = t.lua("return vim.fn.line('.')")
+    local l = t.lua("return LL()")
     H.ok(l >= t.lua("return vim.fn.line('$')") - 1, "G then k stays in the last row or the one above: " .. l)
     t.aligned("needs G k", 2)
     t.open("ledger.md")
@@ -395,7 +395,7 @@ for _, size in ipairs({ { 120, 45, { 12, 16, 20, 24 } }, { 100, 30, { 6, 8, 10, 
       jumps(t, { "gg", ":" .. last .. "<CR>", "gg", ":" .. mid .. "<CR>", ":" .. last .. "<CR>", "?end" .. math.floor(n / 2) .. "<CR>",
         "G", "?end" .. n .. "<CR>", "gg", "/end" .. n .. "<CR>", ":5<CR>", ":" .. last .. "<CR>", "gg", "/end" .. mid - 4 .. "<CR>", "n", "N" }, "big " .. n)
       t.input("G"); t.input("k"); t.input("k")
-      H.eq(last, t.lua("return vim.fn.line('.')"), "big " .. n .. ": G k k lands on the last row")
+      H.eq(last, t.lua("return LL()"), "big " .. n .. ": G k k lands on the last row")
       t.aligned("big G k k", 2)
     end
   end)
@@ -451,11 +451,11 @@ for _, size in ipairs({ { 120, 45, 60 }, { 100, 30, 40 } }) do
     local want = ls[1]
     rows = t.aligned("<C-d>")
     ks, mk = seen(rows)
-    print(("    <C-d>: line %d (motion target %d), %s"):format(t.lua("return vim.fn.line('.')"), want, desc(ks, mk)))
-    H.eq(want, t.lua("return vim.fn.line('.')"), "<C-d> lands on its target")
+    print(("    <C-d>: line %d (motion target %d), %s"):format(t.lua("return LL()"), want, desc(ks, mk)))
+    H.eq(want, t.lua("return LL()"), "<C-d> lands on its target")
     H.ok(ks[#ks] > prev_max, "<C-d> revealed rows: " .. desc(ks, mk))
     t.input(":34<CR>") -- row 30
-    H.eq(34, t.lua("return vim.fn.line('.')"), "on row 30")
+    H.eq(34, t.lua("return LL()"), "on row 30")
     rows = t.aligned("row 30")
     ks, mk = seen(rows)
     print("    :34 (row 30): " .. desc(ks, mk))
@@ -470,8 +470,8 @@ for _, size in ipairs({ { 120, 45, 60 }, { 100, 30, 40 } }) do
     end
     rows = t.aligned("row 30 after <C-y> x" .. tries)
     ks, mk = seen(rows)
-    print(("    <C-y> x%d: line %d, %s"):format(tries, t.lua("return vim.fn.line('.')"), desc(ks, mk)))
-    H.eq(34, t.lua("return vim.fn.line('.')"), "cursor still on row 30")
+    print(("    <C-y> x%d: line %d, %s"):format(tries, t.lua("return LL()"), desc(ks, mk)))
+    H.eq(34, t.lua("return LL()"), "cursor still on row 30")
     H.ok(#mk == 2 and mk[1].row < find(rows, "topic30") and mk[2].row > find(rows, "topic30"), "markers above and below row 30: " .. desc(ks, mk))
     -- the clip's marker counts the header among the rows above; the sticky
     -- header float's marker (last float line) counts body rows only
@@ -482,10 +482,10 @@ for _, size in ipairs({ { 120, 45, 60 }, { 100, 30, 40 } }) do
       t.input("<C-e>")
       rows = t.aligned("row 30 <C-e> " .. i)
       ks, mk = seen(rows)
-      print(("    row 30 <C-e> %d: line %d, %s"):format(i, t.lua("return vim.fn.line('.')"), desc(ks, mk)))
+      print(("    row 30 <C-e> %d: line %d, %s"):format(i, t.lua("return LL()"), desc(ks, mk)))
     end
     local _, _, set = seen(rows)
-    H.eq(34, t.lua("return vim.fn.line('.')"), "cursor on row 30 after <C-e>")
+    H.eq(34, t.lua("return LL()"), "cursor on row 30 after <C-e>")
     H.ok(set[29] and set[30] and set[31], "rows 29-31 visible: " .. desc(ks, mk))
     H.ok(#mk >= 1 and mk[#mk].row > find(rows, "topic31") and mk[#mk].row >= Hh - 3, "marker at the bottom: " .. desc(ks, mk))
     H.eq(n - ks[#ks], mk[#mk].n, "bottom marker count after <C-e>")
@@ -514,7 +514,7 @@ case("F8 smartcase: / ? n N targets and landings honour ignorecase + smartcase",
   H.eq({ 5, 10 }, target("\\cWP5", false, 0), "intent target of /\\cWP5")
   local function land(keys, want)
     t.input(keys)
-    H.eq(want, t.lua("return vim.fn.line('.')"), "line after " .. keys)
+    H.eq(want, t.lua("return LL()"), "line after " .. keys)
     t.aligned("after " .. keys, 2)
   end
   land("gg", 1); land("/WP5<CR>", 16); land("gg", 1); land("/wp5<CR>", 6)

@@ -20,10 +20,12 @@ local SIZES = { { 120, 45 }, { 100, 30 }, { 140, 50 }, { 97, 31 } }
 local RUNS = {
   { "needs.md", "flow" }, { "ledger.md", "flow" }, { "needs-live.md", "flow" },
   { "needs.md", "row" }, { "needs.md", "cell" },
+  -- WP-K: 7x500 and 7x700-character cells: parked, never raw (80x24 too)
+  { "huge.md", "flow", { { 120, 45 }, { 100, 30 }, { 97, 31 }, { 80, 24 } } },
 }
 
 for _, run in ipairs(RUNS) do
-  for _, sz in ipairs(SIZES) do
+  for _, sz in ipairs(run[3] or SIZES) do
     local fx, mode, W, Hh = run[1], run[2], sz[1], sz[2]
     local strict = mode == "flow"
     local name = ("V1 %s %dx%d spill=%s: %s"):format(fx, W, Hh, mode, strict

@@ -99,7 +99,7 @@ local function child(W, Hh)
     -- bottom) may have its line, the cursor, under the float: the active
     -- cell's highlight is what shows)
     local scrolled = t.lua([[local m = M._last_model(0); local v = m and m.vrow
-      return v ~= nil and v.lnum == vim.fn.line('.') - 1 and (v.off > 0 or (v.pre or 0) < (v.reserve or 0))]])
+      return v ~= nil and v.lnum == LL() - 1 and (v.off > 0 or (v.pre or 0) < (v.reserve or 0))]])
     if wl - 1 < n and not scrolled then error(label .. (": cursor screen row %d under the %d-line float\n"):format(wl - 1, n) .. t.dump(rows), 2) end
     return rows, f
   end
@@ -147,7 +147,7 @@ local STATE = [[
   local p = M._plan(0)
   local f = HD._floats[vim.api.nvim_get_current_win()]
   local fh = (f and vim.api.nvim_win_is_valid(f.win)) and vim.api.nvim_win_get_config(f.win).height or 0
-  return { line = vim.fn.line("."), topline = v.topline, topfill = v.topfill, fh = fh,
+  return { line = LL(), topline = v.topline, topfill = v.topfill, fh = fh,
     show = p and p.show_header or false, plan = p and { p.topline, p.topfill, p.float_height } or {} }
 ]]
 local function fmt(s)
@@ -182,7 +182,7 @@ end)
 case("C1b needs 120x45: G from the top shows the float at once, aligned", 120, 45, function(t)
   t.open("needs.md")
   t.input("G")
-  H.eq(LAST + 1, t.lua("return vim.fn.line('.')"), "G on the last row")
+  H.eq(LAST + 1, t.lua("return LL()"), "G on the last row")
   local rows = t.pinned("G")
   H.eq(1, count(rows, LABEL), "header text once")
   stable(t, "C1b G")
@@ -224,7 +224,7 @@ case("C1d marker count: 40-row table at 120x45, rows 40..20 with <C-k>; header_t
   t.cur(45, t.col(45, 2))
   local checked, hts = 0, {}
   for _ = 1, 20 do
-    if #t.floats() == 1 and marker_count_ok(t, "row " .. t.lua("return vim.fn.line('.')")) then checked = checked + 1 end
+    if #t.floats() == 1 and marker_count_ok(t, "row " .. t.lua("return LL()")) then checked = checked + 1 end
     t.input("<C-k>")
   end
   H.ok(checked > 3, "float markers checked: " .. checked)
@@ -243,7 +243,7 @@ case("C1d marker count: 40-row table at 120x45, rows 40..20 with <C-k>; header_t
   end
   for _, ht in ipairs({ 3, 4 }) do
     H.ok(at_ht(ht), "a topline gives header_top " .. ht)
-    H.eq(45, t.lua("return vim.fn.line('.') - 1"), "cursor stays on the last row")
+    H.eq(45, t.lua("return LL() - 1"), "cursor stays on the last row")
     local fl = t.floats()
     H.eq(1, #fl, "header_top " .. ht .. ": float shown\n" .. t.dump())
     local rows = t.aligned("header_top " .. ht)
@@ -276,7 +276,7 @@ case("C2 needs 120x45: <C-e> scrolls the header off (float), <C-y> back to the r
     if #fl == 1 then shown = i; t.pinned("<C-e> x" .. i); break end
   end
   H.ok(shown, "float shown after scrolling the header off")
-  H.eq(FIRST + 2, t.lua("return vim.fn.line('.')"), "cursor still on the row")
+  H.eq(FIRST + 2, t.lua("return LL()"), "cursor still on the row")
   for i = 1, 40 do
     t.input("<C-y>")
     local fl, rows = t.floats(), t.screen()
@@ -371,7 +371,7 @@ for _, mode in ipairs({ "flow", "row", "cell" }) do
       t.input("<Ignore>")
       -- (a raw row, WP-I round 3 at these sizes in "flow": the cell from the
       -- cursor's byte, as nav.lua moves by the scan model)
-      local c = t.lua([[local c = vim.api.nvim_win_get_cursor(0); local m = M._last_model(0)
+      local c = t.lua([[local c = M.logical_cursor(0); local m = M._last_model(0)
         local cell = m and m.cursor and m.cursor.tbl.rows[m.cursor.r].cells[m.cursor.k]
         local k = m and m.cursor and m.cursor.k or 0
         if m and not m.cursor and m.vrow and m.vrow.lnum == c[1] - 1 then
@@ -428,10 +428,10 @@ for _, size in ipairs({ { 120, 45 }, { 80, 24 } }) do
       t.cur(last, t.col(last, 2))
       for _ = 1, 30 do
         if #t.floats() > 0 then break end
-        if t.lua("return vim.fn.line('.') - 1") ~= last then break end
+        if t.lua("return LL() - 1") ~= last then break end
         t.input("<C-e>")
       end
-      if #t.floats() > 0 and t.lua("return vim.fn.line('.') - 1") == last then
+      if #t.floats() > 0 and t.lua("return LL() - 1") == last then
         shown = shown + 1
         t.pinned(("table at %d"):format(tb[1]))
       end
@@ -474,7 +474,7 @@ for _, sp in ipairs({ { "needs.md", 120, 45, FIRST, LAST }, { "needs.md", 80, 30
     t.cur(last, t.col(last, 2))
     local steps, pinned = 0, 0
     while true do
-      local l = t.lua("return vim.fn.line('.') - 1")
+      local l = t.lua("return LL() - 1")
       local fl = t.floats()
       local rows = t.aligned("row " .. l)
       if #fl > 0 then
@@ -489,9 +489,9 @@ for _, sp in ipairs({ { "needs.md", 120, 45, FIRST, LAST }, { "needs.md", 80, 30
       t.input("<C-k>")
       steps = steps + 1
       H.ok(steps < 100, "walk ends")
-      H.ok(t.lua("return vim.fn.line('.') - 1") < l, "<C-k> moved up from " .. l)
+      H.ok(t.lua("return LL() - 1") < l, "<C-k> moved up from " .. l)
     end
-    H.eq(first, t.lua("return vim.fn.line('.') - 1"), "reached the first body row")
+    H.eq(first, t.lua("return LL() - 1"), "reached the first body row")
     print(("INFO C7 %s %dx%d: %d steps, float shown in %d"):format(src, W, Hh, steps, pinned))
     if src == "long" then H.ok(pinned > 5, "the float showed during the walk") end
     t.no_errors("C7")
@@ -706,7 +706,7 @@ for _, sz in ipairs({ { 100, 20 }, { 97, 31 } }) do
     t.cur(LAST + 1, t.col(LAST + 1, 3))
     local function vr()
       return t.lua([[local m = M._last_model(0); local v = m.vrow
-        return v and { v.room_down, v.room_up, v.off, vim.fn.line('.'), m.tall ~= nil } or false]])
+        return v and { v.room_down, v.room_up, v.off, LL(), m.tall ~= nil } or false]])
     end
     local TL = LAST + 2 -- 1-based line of the tall row
     local v0 = vr()
@@ -722,7 +722,7 @@ for _, sz in ipairs({ { 100, 20 }, { 97, 31 } }) do
       sizes_ok(t, "j " .. i)
     end
     t.input("j")
-    H.eq(TL + 1, t.lua("return vim.fn.line('.')"), "j at the row's end leaves the table")
+    H.eq(TL + 1, t.lua("return LL()"), "j at the row's end leaves the table")
     t.cur(LAST + 1, t.col(LAST + 1, 3))
     for _ = 1, vr()[1] do t.input("j") end -- (the view differs from the first visit: no note)
     local up = vr()[2]
@@ -734,7 +734,7 @@ for _, sz in ipairs({ { 100, 20 }, { 97, 31 } }) do
       sizes_ok(t, "k " .. i)
     end
     t.input("k")
-    H.eq(TL - 1, t.lua("return vim.fn.line('.')"), "k at the row's top: the row above")
+    H.eq(TL - 1, t.lua("return LL()"), "k at the row's top: the row above")
     sizes_ok(t, "k across")
     print(("INFO C11 tall %dx%d: %d screen rows scrolled down, %d up"):format(sz[1], sz[2], down, up))
     t.no_errors("C11 tall")

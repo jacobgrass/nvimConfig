@@ -67,6 +67,8 @@ function P.snap()
   if Mo._on_scrolled then Mo._on_scrolled(win); vim.cmd("redraw") end
   local v = vim.fn.winsaveview()
   local cur = api.nvim_win_get_cursor(win)
+  local real = cur -- (WP-K: parked, the real cursor is on the park line; the row is the active row)
+  cur = require("custom.mdtable").logical_cursor(win)
   local M = require("custom.mdtable")
   local m = M._last_model(win)
   local floats = {}
@@ -76,7 +78,7 @@ function P.snap()
     floats = { row = c.row, height = c.height, hidden = c.hide or false }
   end
   local rows, top, cells, left = P.dump()
-  local pos = vim.fn.screenpos(win, cur[1], cur[2] + 1)
+  local pos = vim.fn.screenpos(win, real[1], real[2] + 1)
   pos.row = pos.row - top
   pos.col = pos.col - left
   local a, b = span(rows, pos.row)

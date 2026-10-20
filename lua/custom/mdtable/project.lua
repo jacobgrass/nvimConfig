@@ -582,11 +582,12 @@ end
 -- screen text is the same in every cell. off (clamped to the row's lines):
 -- in-row scroll, the row's first off lines move to the block above. hint
 -- (a virtual line or nil): a note drawn right above the row (its
--- separator). Memoized per (r, k, off, hint). Returns { marks, above,
+-- separator). p (WP-K): the covered line, the park line the cursor is on
+-- (default r). Memoized per (r, k, off, p, hint). Returns { marks, above,
 -- below, rows (screen rows of the line), consumed (tape lines on it), s
 -- (tape index on its first screen row), from_t (the row's separator or
 -- first line), first_t, last_t (the row's lines), ntape, off, k, g }.
-function M.tall_row(tbl, lay, r, k, off, opts, hint)
+function M.tall_row(tbl, lay, r, k, off, opts, hint, p)
   local hg = M.hl_grid(tbl, lay, opts, r, k)
   local from = hg.sep[r] or hg.first[r]
   local tg = hg
@@ -606,11 +607,12 @@ function M.tall_row(tbl, lay, r, k, off, opts, hint)
   local from_t, first_t = from + d, hg.first[r] + d
   local last_t = first_t + hg.count[r] - 1
   off = math.max(0, math.min(off or 0, last_t - from_t))
-  local key = "T" .. r .. ":" .. k .. ":" .. off .. (hint and (":" .. tostring(hint)) or "")
+  p = p or r
+  local key = "T" .. r .. ":" .. k .. ":" .. off .. ":" .. p .. (hint and (":" .. tostring(hint)) or "")
   local res = hg.proj[key]
   if res then return res end
-  local cov = M.covered_row(tbl, lay, r, opts)
-  local tape, row = tg.lines, tbl.rows[r]
+  local cov = M.covered_row(tbl, lay, p, opts)
+  local tape, row = tg.lines, tbl.rows[p]
   local s = from_t + off
   local marks = {}
   conceal(marks, 0, #row.line)

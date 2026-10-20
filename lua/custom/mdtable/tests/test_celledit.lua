@@ -510,7 +510,7 @@ end)
 
 local HINT = "tall row: Ctrl-hjkl select a cell, i edits in a float"
 local function cell_k(t) -- cell of the main window's cursor
-  return t.lua("local c = vim.api.nvim_win_get_cursor(0); local m = require('custom.mdtable.scan').tables(0, c[1] - 1, c[1]); for _, tb in ipairs(m) do local r = tb.rows[c[1] - tb.start_row]; if r then return require('custom.mdtable.project').cell_at(r, c[2]) end end")
+  return t.lua("local c = M.logical_cursor(0); local m = require('custom.mdtable.scan').tables(0, c[1] - 1, c[1]); for _, tb in ipairs(m) do local r = tb.rows[c[1] - tb.start_row]; if r then return require('custom.mdtable.project').cell_at(r, c[2]) end end")
 end
 local function screen_has(t, text)
   local rows = t.lua("return S.screen(0)")
@@ -542,7 +542,7 @@ for _, sz in ipairs({ { 100, 20 }, { 100, 30 }, { 120, 45 } }) do
     t.input("Q<Esc><CR>")
     H.eq(line0:sub(1, cell.s) .. "Q" .. line0:sub(cell.s + 1), line_of(t, ROW12), "exact bytes: Q before the cell's text")
     H.ok(not t.fl(), "closed")
-    H.eq(ROW12 + 1, t.lua("return vim.fn.line('.')"), "back on the row")
+    H.eq(ROW12 + 1, t.lua("return LL()"), "back on the row")
     H.eq({ true, false, 3 }, t.lua(VSTATE), "the highlight stays on cell 3")
     t.aligned(tag .. " after the editor")
     for _, k in ipairs({ { "a", "i", "end" }, { "A", "i", "end" }, { "I", "i", 0 }, { "s", "i", 0 }, { "c", "i", 0 },
@@ -559,11 +559,11 @@ for _, sz in ipairs({ { 100, 20 }, { 100, 30 }, { 120, 45 } }) do
     -- the note: only during the session's first visit of a virtual row
     t.input("<C-k>")
     t.input("<C-j>")
-    H.eq({ ROW12 + 1, 3 }, { t.lua("return vim.fn.line('.')"), cell_k(t) }, "back on the row, cell 3")
+    H.eq({ ROW12 + 1, 3 }, { t.lua("return LL()"), cell_k(t) }, "back on the row, cell 3")
     H.eq(nil, (screen_has(t, HINT)), "no note on the second visit")
     -- move to the next row in the editor: closing lands in that row's cell
     t.input("i<C-j><Esc><CR>")
-    H.eq(ROW12 + 2, t.lua("return vim.fn.line('.')"), "on the next row after <C-j>")
+    H.eq(ROW12 + 2, t.lua("return LL()"), "on the next row after <C-j>")
     H.eq(3, cell_k(t), "in cell 3 of the next row")
     t.aligned(tag .. " after <C-j>")
     t.no_errors("W1")
