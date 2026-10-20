@@ -114,6 +114,14 @@ end
 
 local function paste_fn()
   return function()
+    if not state.probe then
+      -- Startup probe still pending (or not yet started): wait for it, at most
+      -- its own 1 s timeout, so an early `p` after a Windows copy still works.
+      M.probe()
+      vim.wait(PROBE_MS + 100, function()
+        return state.probe ~= nil
+      end, 10)
+    end
     if state.mode ~= "win32yank" then
       M.maybe_reprobe()
       notify "clipboard bridge down; using local register"
@@ -210,8 +218,14 @@ M._apply = apply
 function M.setup()
   resolve_socket() -- now, so every child (LSP, :terminal) inherits a live one
   apply "osc52"
-  vim.schedule(M.probe) -- off the startup path
-  vim.api.nvim_create_autocmd("FocusGained", {
+  vim.schedule(function() -- off the startup path
+    if not state.probe then
+      M.probe()
+    end
+  end)
+  -- CursorHold too: tmux without `focus-events on` never sends FocusGained.
+  -- maybe_reprobe only runs while the bridge is down, at most once a minute.
+  vim.api.nvim_create_autocmd({ "FocusGained", "CursorHold" }, {
     group = vim.api.nvim_create_augroup("custom_clipboard", { clear = true }),
     callback = M.maybe_reprobe,
   })
