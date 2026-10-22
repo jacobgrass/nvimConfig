@@ -93,6 +93,39 @@ function _G.FSCREEN()
   end
   return out
 end
+-- the float's cursor as drawn: 0-based row and column in its text area
+-- and its byte column in the line. winline/wincol as insert mode computed
+-- them for its last redraw: read in the float (the current window), no
+-- nvim_win_call and no redraw (recomputed from an RPC request, a cursor
+-- after a line that fills the width reads as past the right edge);
+-- screenrow/screencol are not reliable over RPC.
+function _G.CUR()
+  local st = CE.state()
+  assert(api.nvim_get_current_win() == st.win, "CUR: the float is not the current window")
+  local byte = api.nvim_win_get_cursor(st.win)[2]
+  local r = { row = vim.fn.winline() - 1, col = vim.fn.wincol() - 1, wincol = vim.fn.wincol(), winline = vim.fn.winline(),
+    byte = byte, line = api.nvim_buf_get_lines(st.buf, 0, 1, false)[1] }
+  if byte > 0 then -- the character before the cursor: its row and last column in the text area
+    local pos, last = api.nvim_win_get_position(st.win), vim.fn.screenpos(st.win, 1, byte) -- pos: the border's top-left
+    r.prev_row, r.prev_end = last.row - (pos[1] + 2), last.endcol - (pos[2] + 2)
+  end
+  return r
+end
+-- the float's width by the rule: float_width of its lines, one more column
+-- where at that width a line's last character ends on the last column
+-- (place() widens once; checked by narrowing the float, then re-placed)
+function _G.WANT_W()
+  local st = CE.state()
+  local w = CE.float_width(api.nvim_buf_get_lines(st.buf, 0, -1, false), api.nvim_win_get_width(st.pwin))
+  local cur = api.nvim_win_get_config(st.win).width
+  if cur == w + 1 then
+    api.nvim_win_set_config(st.win, { width = w })
+    local fills = CE.fills_row(st.win, w)
+    CE._place()
+    if fills then return cur end
+  end
+  return w
+end
 function _G.CELL(lnum, k)
   local c = CE._cell_of(api.nvim_win_get_buf(_G.WIN), lnum, k)
   return { s = c.cell.s, e = c.cell.e, text = c.cell.text, line = c.row.line }
@@ -105,6 +138,10 @@ local function child(W, Hh)
   local t = { c = c }
   function t.lua(code, ...) return c.lua(code, ...) end
   function t.input(keys) c.request("nvim_input", keys); c.request("nvim_input", "<Ignore>") end
+  -- one typed key as a terminal sends it: no <Ignore> after it (pending
+  -- typeahead makes insert mode skip TextChangedI before an RPC request
+  -- is served: the float would be measured one key late)
+  function t.key(k) c.request("nvim_input", k) end
   function t.open(src, setup_code)
     c.lua("_G.BUF, _G.WIN = S.open(...)" .. (setup_code and (";" .. setup_code) or ""), src)
     t.input("<Ignore>")
@@ -157,13 +194,15 @@ local function case(name, W, Hh, fn)
   end)
 end
 
--- float geometry rules (brief: width = clamp(wrap-60 width, 20, winwidth-6),
--- height = wrapped line count clamped to 1..winheight-4, centred)
+-- float geometry rules: width = clamp(wrap-60 width, MIN_WIDTH 40,
+-- winwidth-6), widened for the insert cursor's cell after the text
+-- (float_width, WANT_W), height = wrapped line count clamped to
+-- MIN_HEIGHT 3..winheight-4 (never below 1), centred
 local function geometry_ok(t, f, label)
-  local want_w = t.lua("return require('custom.mdtable.celledit').width_for(...)", table.concat(f.text, " "), f.pw)
+  local want_w = t.lua("return WANT_W()")
   H.eq(want_w, f.width, label .. ": width")
   H.ok(f.width <= f.pw - 6, label .. ": width within the window")
-  H.eq(math.max(1, math.min(f.th, f.ph - 4)), f.height, label .. ": height")
+  H.eq(math.max(1, math.min(math.max(f.th, 3), f.ph - 4)), f.height, label .. ": height")
   H.ok(f.height + 2 <= f.ph, label .. ": height within the window")
   H.eq(math.max(0, math.floor((f.ph - f.height - 2) / 2)), f.row, label .. ": centred row")
   H.eq(math.max(0, math.floor((f.pw - f.width - 2) / 2)), f.col, label .. ": centred col")
@@ -202,13 +241,42 @@ H.run("U2 C4 round trip: \\|, **bold**, link, CJK, emoji, code are byte-identica
   end)
 end)
 
-H.run("U3 width_for: wrap at 60, clamp 20..winwidth-6", function()
-  H.eq(20, CE.width_for("short", 100))
+H.run("U3 width_for: wrap at 60, clamp MIN_WIDTH 40..winwidth-6", function()
+  H.eq({ 40, 3, 60 }, { CE.MIN_WIDTH, CE.MIN_HEIGHT, CE.WRAP }, "constants")
+  H.eq(40, CE.width_for("short", 100))
+  H.eq(40, CE.width_for("", 100), "empty cell")
+  H.eq(45, CE.width_for(("x"):rep(45), 100), "one word between the minimum and the wrap column")
   H.eq(59, CE.width_for(("abcd "):rep(100), 200), "12 words of 4 per line")
   H.eq(94, CE.width_for(("x"):rep(150), 100), "a word longer than the window")
   H.eq(14, CE.width_for("short", 20), "narrow window")
   H.eq(1, CE.width_for("x", 3))
   H.eq(55, CE.width_for(("日本語 "):rep(40), 100), "CJK display width: 8 words of 6 per line")
+end)
+
+H.run("U4 height_for: wrapped line count clamped MIN_HEIGHT 3..winheight-4", function()
+  H.eq(3, CE.height_for(1, 30), "one line: the minimum")
+  H.eq(3, CE.height_for(0, 30), "no text")
+  H.eq(7, CE.height_for(7, 30))
+  H.eq(26, CE.height_for(200, 30), "clamped to the window")
+  H.eq(2, CE.height_for(1, 6), "a short window wins over the minimum")
+  H.eq(1, CE.height_for(5, 3), "never below 1")
+end)
+
+H.run("U5 float_width: width_for, one more column than a line that fits on one row (the insert cursor)", function()
+  H.eq(40, CE.float_width({ "" }, 100), "empty: the minimum")
+  H.eq(40, CE.float_width({ ("x"):rep(39) }, 100), "39 columns + the cursor")
+  H.eq(41, CE.float_width({ ("x"):rep(40) }, 100), "40 columns + the cursor")
+  H.eq(47, CE.float_width({ ("abcd "):rep(9) .. " " }, 100), "trailing spaces count")
+  H.eq(61, CE.float_width({ ("x"):rep(60) }, 100), "60 columns: still one row")
+  H.eq(CE.width_for(("abcd "):rep(100), 100), CE.float_width({ ("abcd "):rep(100) }, 100), "longer than WRAP: width_for")
+  H.eq(24, CE.float_width({ ("x"):rep(40) }, 30), "clamped to the window")
+  H.eq(42, CE.float_width({ ("x"):rep(30), ("y"):rep(41) }, 100), "several lines: the widest last row + the cursor")
+  H.eq(60, CE.float_width({ ("abcd "):rep(23) .. "abcd" }, 100), "a wrapped last row that fills 59 columns + the cursor")
+  H.eq(61, CE.float_width({ ("abcd "):rep(24) }, 100), "... and a space typed after it")
+  H.eq(63, CE.float_width({ ("日"):rep(31) }, 100), "one 62-column token (no WRAP cap): + the cursor")
+  H.eq(94, CE.float_width({ ("x"):rep(150) }, 100), "a token wider than the window: clamped")
+  H.eq(5, CE.last_row_width(("abcd "):rep(13), 60), "last row: one word and its space")
+  H.eq(3, CE.last_row_width("   ", 60), "only spaces")
 end)
 
 ------------------------------------------------------------------------------
@@ -460,6 +528,155 @@ for _, sz in ipairs(SIZES) do
     t.no_errors("C6")
   end)
 end
+
+-- celledit.md: line 5 (0-based) is row 2, its cell 2 is empty
+local EMPTY_L, EMPTY_K = 5, 2
+local function open_empty(t)
+  t.open("celledit.md")
+  t.cur(EMPTY_L, t.cell(EMPTY_L, EMPTY_K).s) -- S.cell_col skips a blank cell's spaces into the next cell
+  t.input("\\te")
+  local f = t.fl()
+  H.ok(f and f.k == EMPTY_K and f.text[1] == "", "editor open on the empty cell")
+  return f
+end
+
+case("C8 100x30: an empty cell opens a float of at least 40x3, centred", 100, 30, function(t)
+  local f = open_empty(t)
+  H.ok(f.width >= 40, "width >= 40: " .. f.width)
+  H.ok(f.height >= 3, "height >= 3: " .. f.height)
+  H.ok(f.width <= f.pw - 6 and f.height <= f.ph - 4, "within the parent")
+  geometry_ok(t, f, "empty cell")
+  t.no_errors("C8")
+end)
+
+case("C8b 30x6: the minimum size is clamped to a small parent", 30, 6, function(t)
+  local f = open_empty(t)
+  H.eq(f.pw - 6, f.width, "width clamped to winwidth-6")
+  H.eq(math.max(1, math.min(3, f.ph - 4)), f.height, "height clamped to winheight-4")
+  geometry_ok(t, f, "small parent")
+  t.no_errors("C8b")
+end)
+
+-- the screen cursor after a typed key: inside the float's text area (not
+-- on its border), right after the character just typed (spaces included:
+-- same screen row, the next column; so never at column 0 with that text
+-- before it), and past the previous position unless the float's width
+-- changed (a wider float reflows the words)
+local function cursor_ok(t, prev, label)
+  local c = t.lua("return CUR()")
+  local f = t.fl()
+  c.width = f.width
+  local function show() return vim.inspect(c, { newline = " ", indent = "" }) .. " in " .. f.width .. "x" .. f.height end
+  H.ok(c.row >= 0 and c.row < f.height and c.col >= 0 and c.col < f.width, label .. ": cursor inside the float's text area: " .. show())
+  if c.byte > 0 then
+    H.eq({ c.prev_row, c.prev_end + 1 }, { c.row, c.col }, label .. ": cursor right after the typed character: " .. show())
+  end
+  if prev and prev.width == c.width then
+    H.ok(c.row > prev.row or (c.row == prev.row and c.col > prev.col),
+      label .. ": the cursor advanced: " .. vim.inspect(prev, { newline = " ", indent = "" }) .. " -> " .. show())
+  end
+  return c, f
+end
+
+case("C9 100x30: typing ab<Space>cd moves the screen cursor one column per key, the space included", 100, 30, function(t)
+  open_empty(t)
+  t.input("i")
+  local prev
+  local cols = {}
+  for _, k in ipairs({ "a", "b", "<Space>", "c", "d" }) do
+    t.key(k)
+    prev = cursor_ok(t, prev, "after " .. k)
+    cols[#cols + 1] = prev.wincol
+  end
+  print("INFO C9 wincol after a, b, <Space>, c, d: " .. table.concat(cols, " "))
+  H.eq({ 2, 3, 4, 5, 6 }, cols, "wincol: one column per key")
+  H.eq({ "ab cd" }, t.fl().text, "typed text")
+  t.input("<Esc>q")
+  t.no_errors("C9")
+end)
+
+case("C10 100x30: typing a 90-character sentence: the float follows the text, the cursor stays visible and advances", 100, 30, function(t)
+  open_empty(t)
+  t.input("i")
+  -- synthetic text; spaces fall on the wrap columns as the float grows
+  local sentence = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho si"
+  H.eq(90, #sentence, "sentence length")
+  local prev
+  for i = 1, #sentence do
+    local ch = sentence:sub(i, i)
+    t.key(ch == " " and "<Space>" or ch)
+    local label = ("key %d %q"):format(i, ch)
+    local c, f = cursor_ok(t, prev, label)
+    prev = c
+    H.eq(sentence:sub(1, i), f.text[1], label .. ": text")
+    H.ok(f.height >= f.th, label .. ": all text lines visible (height " .. f.height .. ", text height " .. f.th .. ")")
+    H.eq(0, f.view.skipcol, label .. ": no partial (skipcol) line")
+    H.eq(1, f.view.topline, label .. ": not scrolled")
+    geometry_ok(t, f, label)
+  end
+  t.input("<Esc><CR>")
+  H.eq(sentence, t.cell(EMPTY_L, EMPTY_K).text, "applied")
+  t.no_errors("C10")
+end)
+
+case("C11 100x30: words that exactly fill each 59-column row: a space typed at the right edge advances the cursor", 100, 30, function(t)
+  open_empty(t)
+  t.input("i")
+  local text = ("abcd "):rep(30) -- 12 words (59 columns) per wrapped row
+  local prev
+  for i = 1, #text do
+    local ch = text:sub(i, i)
+    t.key(ch == " " and "<Space>" or ch)
+    local label = ("key %d %q"):format(i, ch)
+    local c, f = cursor_ok(t, prev, label)
+    prev = c
+    H.ok(f.height >= f.th, label .. ": all text lines visible")
+    H.eq(0, f.view.skipcol, label .. ": no partial (skipcol) line")
+    geometry_ok(t, f, label)
+  end
+  t.input("<Esc>q")
+  t.no_errors("C11")
+end)
+
+-- type text key by key into the empty cell; after each key the cursor is
+-- inside the text area right after the typed character, nothing is
+-- scrolled (skipcol 0, topline 1) and every text line is visible
+local function type_checked(t, text, tag)
+  open_empty(t)
+  t.input("i")
+  local prev
+  local n = 0
+  for _, ch in ipairs(vim.fn.split(text, "\\zs")) do
+    n = n + 1
+    t.key(ch == " " and "<Space>" or ch)
+    local label = ("%s key %d %q"):format(tag, n, ch)
+    local c, f = cursor_ok(t, prev, label)
+    prev = c
+    H.ok(f.height >= f.th, label .. ": all text lines visible")
+    H.eq({ 0, 1 }, { f.view.skipcol, f.view.topline }, label .. ": not scrolled (skipcol, topline)")
+  end
+  return t.fl()
+end
+
+-- (review F1: a full last row when the text height equals the float's
+-- height scrolls the line's first row away; the full-row check must not
+-- depend on the first character being on screen)
+for _, n in ipairs({ 33, 44 }) do
+  case(("C12 100x30: %d words + 1 of 'line': full last rows at the float's height, never scrolled"):format(n), 100, 30, function(t)
+    local f = type_checked(t, ("line "):rep(n) .. "line", "C12")
+    H.eq(60, f.width, "final width")
+    t.input("<Esc>q")
+    t.no_errors("C12")
+  end)
+end
+
+-- (review F2: one token wider than WRAP: no WRAP + 1 cap on the cursor column)
+case("C13 100x30: a 62-column CJK token: the cursor stays off the border", 100, 30, function(t)
+  local f = type_checked(t, ("日"):rep(31), "C13")
+  H.eq(63, f.width, "final width: 62 columns + the cursor")
+  t.input("<Esc>q")
+  t.no_errors("C13")
+end)
 
 case("C7 no orphan floats or buffers: :q of the parent split, :bd, :tabnew, close_all", 100, 30, function(t)
   t.open("needs.md")

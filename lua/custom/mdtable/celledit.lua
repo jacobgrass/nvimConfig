@@ -32,6 +32,18 @@
 -- re-escapes `|` and replaces bytes [s, e) of the line with one
 -- nvim_buf_set_text call (one undo step), then re-renders the window.
 --
+-- The float, centred over the parent window: width = the text
+-- word-wrapped at WRAP (60) columns, at least MIN_WIDTH (40), at most the
+-- window's width - 6, and one column past the text's last wrapped row
+-- (the insert cursor's cell: float_width, place()); height = the wrapped
+-- screen lines, at least MIN_HEIGHT (3), at most the window's height - 4
+-- (a longer text scrolls inside the float). It is re-sized on every change
+-- of the text (TextChanged, TextChangedI: it grows and shrinks while
+-- typing, the cursor never in a cut-off line or on the border) and when
+-- the parent is resized. 'wrap' and 'linebreak' are on (words stay
+-- whole); linebreak alone did not cause the cursor problems (a 1-line
+-- float that did not follow the text, and text filling the width).
+--
 -- Main window while the float is open: the renderer's normal drawing of the
 -- cursor row; a row taller than the window is the virtual row with the
 -- edited cell highlighted (the parent's cursor is on the cell, so the
@@ -52,6 +64,8 @@ local project = require("custom.mdtable.project")
 local C = {}
 C.KEY = "<leader>te"
 C.WRAP = 60 -- the float's width: the cell text wrapped at this many columns
+C.MIN_WIDTH = 40 -- the float's minimum size (clamped to the parent window)
+C.MIN_HEIGHT = 3
 
 local S -- the open editor: { win, buf, pwin, pbuf, lnum, k, orig, group }
 local seq = 0
@@ -92,7 +106,37 @@ end
 
 -- Float width for the text in a window `winw` columns wide.
 function C.width_for(text, winw)
-  return math.max(1, math.min(math.max(C.wrap_width(text, C.WRAP), 20), winw - 6))
+  return math.max(1, math.min(math.max(C.wrap_width(text, C.WRAP), C.MIN_WIDTH), winw - 6))
+end
+
+-- Display width of the last row of line word-wrapped at `at` columns,
+-- its trailing whitespace included.
+function C.last_row_width(line, at)
+  local cur = 0
+  for word in line:gmatch("%S+") do
+    local w = api.nvim_strwidth(word)
+    if cur == 0 or cur + 1 + w > at then cur = w else cur = cur + 1 + w end
+  end
+  return cur + api.nvim_strwidth(line:match("%s*$"))
+end
+
+-- Float width for the float's lines: width_for of their text, widened to
+-- one column past the last wrapped row of each line (trailing spaces
+-- included; a token wider than WRAP included): the insert cursor's cell
+-- after the text.
+-- (Where the text exactly fills the float's width, Neovim draws the insert
+-- cursor after it on the right border, linebreak on or off.)
+function C.float_width(lines, winw)
+  local width = C.width_for(table.concat(lines, " "), winw)
+  for _, l in ipairs(lines) do
+    width = math.max(width, math.min(C.last_row_width(l, C.WRAP) + 1, winw - 6))
+  end
+  return width
+end
+
+-- Float height for text `th` screen lines tall in a window `winh` lines high.
+function C.height_for(th, winh)
+  return math.max(1, math.min(math.max(th, C.MIN_HEIGHT), winh - 4))
 end
 
 local function truncate(s, max)
@@ -178,20 +222,54 @@ local function fill(b, text)
   vim.bo[b].modified = false
 end
 
--- Size and centre the float over its parent window.
+-- Size and centre the float over its parent window (on open, on a parent
+-- resize and on every change of the text, so it grows and shrinks while
+-- typing; the cursor and the mode are left alone). The width is set first
+-- (the text height depends on it), keeping the current height: a
+-- temporary 1-line height would scroll the view.
 local function place()
   local fw, pwin = S.win, S.pwin
   local W, Hh = api.nvim_win_get_width(pwin), api.nvim_win_get_height(pwin)
-  local text = table.concat(api.nvim_buf_get_lines(S.buf, 0, -1, false), " ")
-  local width = C.width_for(text, W)
-  local cfg = { relative = "win", win = pwin, width = width, height = 1, row = 0, col = 0, border = "rounded",
-    title = S.title_for(width), title_pos = "left" }
-  api.nvim_win_set_config(fw, cfg)
-  local th = api.nvim_win_text_height(fw, {}).all
-  cfg.height = math.max(1, math.min(th, Hh - 4))
-  cfg.row = math.max(0, math.floor((Hh - cfg.height - 2) / 2))
-  cfg.col = math.max(0, math.floor((W - width - 2) / 2))
-  api.nvim_win_set_config(fw, cfg)
+  local width = C.float_width(api.nvim_buf_get_lines(S.buf, 0, -1, false), W)
+  local cfg = { relative = "win", win = pwin, height = api.nvim_win_get_height(fw), row = 0, col = 0,
+    border = "rounded", title_pos = "left" }
+  local function size()
+    cfg.width, cfg.title = width, S.title_for(width)
+    api.nvim_win_set_config(fw, cfg)
+    cfg.height = C.height_for(api.nvim_win_text_height(fw, {}).all, Hh)
+    cfg.row = math.max(0, math.floor((Hh - cfg.height - 2) / 2))
+    cfg.col = math.max(0, math.floor((W - width - 2) / 2))
+    api.nvim_win_set_config(fw, cfg)
+  end
+  size()
+  -- 'linebreak' moves a word whose following space does not fit to the
+  -- next row, so a wrapped row can fill the float where float_width's
+  -- model says it does not, and the insert cursor after the text would be
+  -- drawn on the right border: a line whose last character ends on the
+  -- float's last column gets one more column, once. (screenpos, not
+  -- wincol: inside TextChangedI insert mode computes that cursor on the
+  -- next row, then draws it on the border.)
+  if width < W - 6 and C.fills_row(fw, width) then
+    width = width + 1
+    size()
+  end
+end
+
+-- Whether the last character of a line of float fw ends on its last
+-- column (the line's last screen row is full). Measured from the float's
+-- text area (its 1-column border), not from the line's first character:
+-- a full last row at the float's height scrolls the first row away
+-- (skipcol). Lines whose end is not on screen are skipped.
+function C.fills_row(fw, width)
+  local buf = api.nvim_win_get_buf(fw)
+  local left = api.nvim_win_get_position(fw)[2] + 2 -- screen column (1-based) of text column 1
+  for i, l in ipairs(api.nvim_buf_get_lines(buf, 0, -1, false)) do
+    if #l > 0 then
+      local last = vim.fn.screenpos(fw, i, #l)
+      if last.endcol > 0 and last.endcol - left + 1 >= width then return true end
+    end
+  end
+  return false
 end
 C._place = function() if S then place() end end
 
@@ -275,6 +353,10 @@ local function new_buf()
     map({ "n", "i" }, "<C-" .. d .. ">", function() C.move(d) end)
   end
   api.nvim_create_autocmd("BufWriteCmd", { buffer = b, callback = function() C.apply() end })
+  -- the float follows the text while typing (place() leaves the cursor and the mode alone)
+  api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, { buffer = b, callback = function()
+    if S and S.buf == b and api.nvim_win_is_valid(S.win) and S.pwin and api.nvim_win_is_valid(S.pwin) then pcall(place) end
+  end })
   api.nvim_create_autocmd("BufWipeout", { buffer = b, callback = function()
     if S and S.buf == b then vim.schedule(function() if S and S.buf == b then pcall(close_impl, false, false) end end) end
   end })
@@ -307,8 +389,8 @@ function C.open(win, lnum, k, opts)
     end
   end
   local b = new_buf()
-  local fw = api.nvim_open_win(b, true, { relative = "win", win = win, width = 20, height = 1, row = 0, col = 0,
-    style = "minimal", border = "rounded", title = " ", title_pos = "left", zindex = 60 })
+  local fw = api.nvim_open_win(b, true, { relative = "win", win = win, width = C.MIN_WIDTH, height = C.MIN_HEIGHT,
+    row = 0, col = 0, style = "minimal", border = "rounded", title = " ", title_pos = "left", zindex = 60 })
   vim.wo[fw].wrap, vim.wo[fw].linebreak = true, true
   S = { win = fw, buf = b }
   local ok, err = pcall(retarget, win, lnum, k, opts)
